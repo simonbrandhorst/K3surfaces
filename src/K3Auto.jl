@@ -184,10 +184,17 @@ end
 
 function Oscar.rays(D::Chamber)
   r = reduce(vcat, walls(D), init=zero_matrix(ZZ,0,rank(D.data.SS)))
-  rQ = change_base_ring(QQ,r)
+  rQ = change_base_ring(QQ,r)*gram_matrix(D.data.SS)
   C = positive_hull(rQ)
-  polarize(C)
-  return rays(C)
+  Cd = polarize(C)
+  L = rays(Cd)
+  Lq = fmpq_mat[matrix(QQ,1,rank(D.data.SS),i) for i in L]
+  # clear denominators
+  Lz = fmpz_mat[change_base_ring(ZZ,i*denominator(i)) for i in Lq]
+  # primitive in S
+  Lz = fmpz_mat[divexact(i,gcd(vec(i))) for i in Lz]
+  @hassert :K3Auto 2 all(all(x>=0 for x in vec(r*gram_matrix(D.data.SS)*transpose(i))) for i in Lz)
+  return Lz
 end
 
 function Base.show(io::IO, c::Chamber)
@@ -472,7 +479,7 @@ function alg319(gram::MatrixElem, raysD::Vector{fmpz_mat}, raysE::Vector{fmpz_ma
   basisinv = inv(change_base_ring(QQ, basis))
   homs = fmpz_mat[]
   is_in_hom_D_E(fz) = all(r*fz in raysE for r in raysD)
-  vE = sum(raysE) # center of mass
+  vE = sum(raysE) # center of mass of the dual cone
   vD = sum(raysD)
   for f in partial_homs
     f = basisinv*f
@@ -483,24 +490,13 @@ function alg319(gram::MatrixElem, raysD::Vector{fmpz_mat}, raysE::Vector{fmpz_ma
     if !membership_test(fz)
       continue
     end
-#    @assert (vD*fz == vE) == is_in_hom_D_E(f)
     if !(vD*fz == vE)
       continue
     end
-    if !((vD*fz == vE) == is_in_hom_D_E(f))
-      # debug
-      @show fz
-      @show (vD*fz == vE)
-      @show is_in_hom_D_E(f)
-      @show gram
-      @show raysD
-      @show raysE
-      @assert false
-    end
-
-    # The center of mass is an interior point.
+    # The center of mass is an interior point
     # Further it uniquely determines the chamber and is compatible with homomorphisms
     # This is basically Remark 3.20
+    # -> but this is not true for the center of mass of the dual cone
     push!(homs, fz)
   end
   @hassert :K3Auto 1 all(f*gram*transpose(f)==gram for f in homs)
@@ -972,6 +968,8 @@ function adjacent_chamber(D::Chamber, v)
       addmul!(w,r, z[1,1])
     end
   end
+  # both weyl vectors should lie in the positive cone.
+  @assert ((D.weyl_vector)*D.data.gramL*transpose(w))[1,1]>0 "$(D.weyl_vector)    $v\n"
   return Chamber(D.data, w, v)
 end
 
@@ -1039,6 +1037,7 @@ function K3Auto(L::ZLat, S::ZLat, w::fmpq_mat; entropy_abort=false, compute_OR=t
     end
     is_explored = false
     for E in chambers[fp]
+      @vprint :K3Auto 2 "$(D.weyl_vector)    $(E.weyl_vector)\n"
       gg = hom(D, E)
       if length(gg) > 0
         # enough to add a single homomorphism
