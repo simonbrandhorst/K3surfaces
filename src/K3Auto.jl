@@ -1491,9 +1491,13 @@ function preprocessingK3Auto(S::ZLat, n::Integer; ample=nothing)
   vv = solve_left(gram_matrix(S),v)
   c = (vv*gram_matrix(S)*transpose(vv))[1,1]
   cc = QQ(Int64(floor(sqrt(Float64(c)))))
-  vv = 10//cc * vv
-  vv = matrix(QQ,1, ncols(vv),[round(i) for i in vv])
-  @assert (vv*gram_matrix(S)*transpose(vv))[1,1]>=0
+  eps = -1
+  @label tryagain
+  eps = eps+1
+  vv_smaller = matrix(QQ,1, ncols(vv),[round(i) for i in ((10//cc+eps) * vv)])
+  if (vv_smaller*gram_matrix(S)*transpose(vv_smaller))[1,1]<0
+    @goto tryagain
+  end
   ntry = 0
   if ample isa Nothing
     #find a random ample vector ... or use a perturbation of the weyl vector?

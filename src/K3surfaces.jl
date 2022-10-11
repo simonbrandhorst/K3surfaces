@@ -1,17 +1,16 @@
 module K3surfaces
 
 import Oscar
-import Hecke
+#import Hecke
 import Markdown
 
 using .Oscar
-using .Hecke
+#using .Hecke
 
 import Hecke: @req, orthogonal_submodule, _short_vectors_gram
 
 include("./K3Auto.jl")
 include("./Serialize.jl")
-greet() = print("Hello World!")
 
 function __init__()
   Oscar.registerSerializationType(K3surfaces.Chamber, "Chamber")
