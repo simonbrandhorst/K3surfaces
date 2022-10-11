@@ -1486,45 +1486,17 @@ function preprocessingK3Auto(S::ZLat, n::Integer; ample=nothing)
   end
   @assert gram_matrix(U) == QQ[0 1; 1 -2]
   weyl, u0 = weyl_vector(L, U)
-  #project the weyl vector to S.
-  v = u0*gram_matrix(ambient_space(L))*transpose(basis_matrix(S))
-  vv = solve_left(gram_matrix(S),v)
-  c = (vv*gram_matrix(S)*transpose(vv))[1,1]
-  cc = QQ(Int64(floor(sqrt(Float64(c)))))
-  eps = -1
-  @label tryagain
-  eps = eps+1
-  vv_smaller = matrix(QQ,1, ncols(vv),[round(i) for i in ((10//cc+eps) * vv)])
-  if (vv_smaller*gram_matrix(S)*transpose(vv_smaller))[1,1]<0
-    @goto tryagain
-  end
-  ntry = 0
   if ample isa Nothing
     #find a random ample vector ... or use a perturbation of the weyl vector?
     @vprint :K3Auto 1 "searching a random ample vector in S\n"
-    while true
-      ntry = ntry+1
-      fudge = floor(ntry//100)
-      h = (fudge*vv+matrix(ZZ,1,rank(S),rand(-10-fudge*10:10+fudge*10, rank(S))))*basis_matrix(S)
-      # confirm that h is in the interior of a weyl chamber,
-      # i.e. check that Q does not contain any -2 vector and h^2>0
-      if inner_product(V,h,h)[1,1]<=0
-        continue
-      end
-      @hassert :K3Auto 1 0 < inner_product(V,h,h)[1,1]
-      Q = Hecke.orthogonal_submodule(S, lattice(V, h))
-      if length(short_vectors(rescale(Q, -1), 2)) == 0
-        break
-      end
-    end
-    if inner_product(V,weyl,h)[1,1]<0
-      h = -h
-    end
+    h = ample_class(S)
+    @vprint :K3Auto 1 "ample vector: $h \n"
   else
     h = ample*basis_matrix(S)
-    Q = orthogonal_submodule(S, lattice(V,h))
-    @assert length(short_vectors(rescale(Q,-1),2))==0
   end
+  # double check
+  Q = orthogonal_submodule(S, lattice(V,h))
+  @assert length(short_vectors(rescale(Q,-1),2))==0
   weyl1,u,hh = weyl_vector_non_degenerate(L,S,u0, weyl,h)
   return L,S,weyl1#L,S,u0, weyl,weyl1, h
 end
@@ -1646,6 +1618,87 @@ function leech_from_root_lattice(niemeier_lattice::ZLat)
   return leech_lattice, h*w, h
 end
 
+################################################################################
+# ample
+################################################################################
+
+function ample_class(S::ZLat)
+  @req signature_tuple(S)[1] == 1 "lattice must be hyperbolic"
+  V = ambient_space(S)
+  u = basis_matrix(S)[1:2,:]
+  if inner_product(V,u,u) == QQ[0 1; 1 -2]
+    h = zero_matrix(QQ,1,rank(S))
+    v = 3*u[1,:] + u[2,:]
+    fudge = 1
+    nt = 0
+    while true
+      a = floor(fudge//2)
+      h = matrix(QQ,1,rank(S)-2,rand(-5-a:5+a,rank(S)-2))
+      h = hcat(zero_matrix(QQ,1,2),h)*basis_matrix(S)
+      b = inner_product(V,h,h)[1,1]
+      bb = ZZ(ceil(sqrt(Float64(abs(b)))/2))+fudge
+      h = h + bb*v
+      @hassert :K3Auto 1 inner_product(V,h,h)[1,1]>0
+      # confirm that h is in the interior of a weyl chamber,
+      # i.e. check that Q does not contain any -2 vector and h^2>0
+      Q = rescale(Hecke.orthogonal_submodule(S, lattice(V, h)),-1)
+      @vprint :K3Auto 2 "testing ampleness $(inner_product(V,h,h)[1,1])\n"
+      nt = nt+1
+      if nt >10
+        fudge = fudge+1
+        nt = 0
+      end
+      sv = short_vectors(Q, 2)
+      if length(sv)==0
+        @vprint :K3Auto 1 "found ample class $(h)\n"
+        return h
+      end
+      @vprint :K3Auto 1 "not ample\n"
+    end
+  end
+  G = gram_matrix(S)
+  D, B = Hecke._gram_schmidt(G,identity,true)
+  i = findfirst(x->x, [d>0 for d in diagonal(D)])
+  v = B[i,:]
+  v = denominator(v)*v
+  vsq = (v*gram_matrix(S)*transpose(v))[1,1]
+  @assert vsq > 0
+  # search ample
+  ntry = 0
+  R,x = PolynomialRing(QQ,"x")
+  while true
+    ntry = ntry+1
+    range = 10 + floor(ntry//100)
+    r = matrix(QQ, 1, rank(S), rand(-range:range,rank(S)))
+    rsq = (r*gram_matrix(S)*transpose(r))[1,1]
+    if rsq > 0
+      h = r
+    else
+      rv = (r*gram_matrix(S)*transpose(v))[1,1]
+      p = x^2*vsq + 2*x*rv + rsq
+      rp = roots(p, CalciumQQBar)
+      a = rp[1]
+      b = rp[2]
+      if a > b
+        (a,b) = (b,a)
+      end
+      a = fmpz(floor(a))
+      b = fmpz(ceil(b))
+      if abs(a) > abs(b)
+        alpha = b
+      else
+        alpha = a
+      end
+      h = alpha*v + r
+      @assert (h*gram_matrix(S)*transpose(h))[1,1]>0
+    end
+    h = h*basis_matrix(S)
+    Q = rescale(orthogonal_submodule(S, lattice(V,h)), -1)
+    if length(short_vectors(Q, 2)) == 0
+      return h
+    end
+  end
+end
 
 ################################################################################
 # entropy
@@ -1655,59 +1708,8 @@ function common_invariant(Gamma)
   return left_kernel(reduce(hcat,[g-1 for g in Gamma]))
 end
 
-function has_zero_entropy(S; rank_unimod=26)
-  #=
-  L,S,iS,R,iR = embed_in_unimodular(S,rank_unimod)
-  @assert length(short_vectors(rescale(R,-1),2))>0
-  V = ambient_space(L)
-  U = lattice(V,basis_matrix(S)[1:2, :])
-  @hassert :K3Auto 1 det(U)==-1
-  weyl,u0 = weyl_vector(L, U)
-  #v = matrix(QQ,ones(Int,1,rank(S)-2))*inv(gram_matrix(S)[3:end,3:end])
-  #v = denominator(v)*v
-  #h = hcat(QQ[0 0 ], v) *basis_matrix(S)  #an ample vector
-  u = basis_matrix(U)
-  h = zero_matrix(QQ,1,rank(S))
-  v = 3*u[1,:] + u[2,:]
-  fudge = 1
-  nt = 0
-  while true
-    h = matrix(QQ,1,rank(S)-2,rand(-5:5,rank(S)-2))
-    h = hcat(zero_matrix(QQ,1,2),h)*basis_matrix(S)
-    b = inner_product(V,h,h)[1,1]
-    bb = ZZ(ceil(sqrt(Float64(abs(b)))/2))+fudge
-    h = h + bb*v
-    @hassert :K3Auto 1 inner_product(V,h,h)[1,1]>0
-    # confirm that h is in the interior of a weyl chamber,
-    # i.e. check that Q does not contain any -2 vector and h^2>0
-    Q = rescale(Hecke.orthogonal_submodule(S, lattice(V, h)),-1)
-    Q = lll(Q)
-    @vprint :K3Auto 1 "testing ampleness $(inner_product(V,h,h)[1,1])\n"
-    sv = short_vectors(Q,2)
-    nt = nt+1
-    if nt >10
-      fudge = fudge+1
-      nt = 0
-    end
-    if length(sv)>0
-      @vprint :K3Auto 1 "not ample\n"
-      continue
-    end
-    @vprint :K3Auto 1 "found ample class $(h)\n"
-    @vprint :K3Auto 1 "computing an S-non-degenerate weyl vector\n"
-    weyl1,u1 = weyl_vector_non_degenerate(L,S,u0,weyl,h)
-    if is_S_nondegenerate(L,S,weyl1)
-      weyl = weyl1
-      break
-    end
-  end
-  @assert is_S_nondegenerate(L,S,weyl)
 
-  @vprint :K3Auto 1 "preprocessing completed \n"
-  if preprocessing_only
-    return L,S,weyl
-  end
-  =#
+function has_zero_entropy(S; rank_unimod=26)
   L, S, weyl = preprocessingK3Auto(S, rank_unimod)
   @vprint :K3Auto 1 "Weyl vector: $(weyl)\n"
   data, K3Autgrp, chambers, rational_curves, _ = K3Auto(L,S,weyl, entropy_abort=false)
