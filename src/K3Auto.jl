@@ -1493,12 +1493,15 @@ function preprocessingK3Auto(S::ZLat, n::Integer; ample=nothing)
   cc = QQ(Int64(floor(sqrt(Float64(c)))))
   vv = 10//cc * vv
   vv = matrix(QQ,1, ncols(vv),[round(i) for i in vv])
-
+  @assert (vv*gram_matrix(S)*transpose(vv))[1,1]>=0
+  ntry = 0
   if ample isa Nothing
     #find a random ample vector ... or use a perturbation of the weyl vector?
     @vprint :K3Auto 1 "searching a random ample vector in S\n"
     while true
-      h = (vv+matrix(ZZ,1,rank(S),rand(-10:10, rank(S))))*basis_matrix(S)
+      ntry = ntry+1
+      fudge = floor(ntry//100)
+      h = (fudge*vv+matrix(ZZ,1,rank(S),rand(-10-fudge*10:10+fudge*10, rank(S))))*basis_matrix(S)
       # confirm that h is in the interior of a weyl chamber,
       # i.e. check that Q does not contain any -2 vector and h^2>0
       if inner_product(V,h,h)[1,1]<=0
