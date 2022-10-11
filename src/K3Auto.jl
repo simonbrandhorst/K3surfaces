@@ -459,7 +459,7 @@ function alg319(gram::MatrixElem, raysD::Vector{fmpz_mat}, raysE::Vector{fmpz_ma
   # a depth first search with early abort would be more efficient.
   # for now this does not seem to be a bottleneck
   for i in 1:n
-    @vprint :K3Auto 3 "level $(i), partial homs $(length(partial_homs)) \n"
+    @vprint :K3Auto 4 "level $(i), partial homs $(length(partial_homs)) \n"
     partial_homs_new = fmpz_mat[]
     for img in partial_homs
       extensions = fmpz_mat[]
@@ -1037,7 +1037,7 @@ function K3Auto(L::ZLat, S::ZLat, w::fmpq_mat; entropy_abort=false, compute_OR=t
     end
     is_explored = false
     for E in chambers[fp]
-      @vprint :K3Auto 2 "$(D.weyl_vector)    $(E.weyl_vector)\n"
+      @vprint :K3Auto 4 "$(D.weyl_vector)    $(E.weyl_vector)\n"
       gg = hom(D, E)
       if length(gg) > 0
         # enough to add a single homomorphism
