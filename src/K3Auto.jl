@@ -8,6 +8,11 @@ import Oscar: rays
 # Types
 ################################################################################
 
+@doc Markdown.doc"""
+    BorcherdsData
+
+Contains all the data necessary to run Borcherd's method.
+"""
 mutable struct BorcherdsData
   L::ZLat
   S::ZLat
@@ -125,8 +130,15 @@ mutable struct Chamber
   # for v in walls, the corresponding half space is defined by the equation
   # x * gram_matrix(S)*v >= 0, further v is primitive in S (and, in contrast to Shimada, not S^\vee)
   walls::Vector{fmpz_mat}
+  lengths::Vector{fmpq}
+  B::fmpz_mat # basis
+  gramB::fmpz_mat
   parent_wall::fmpz_mat # for the spanning tree
   data::BorcherdsData
+  fp::Matrix{Int} # fingerprint backtrack
+  #per::Vector{Int}  # permutation
+  fp_diagonal::Vector{Int}
+
   function Chamber()
     return new()
   end
@@ -252,6 +264,124 @@ function fingerprint(D::Chamber)
   return hash((m1, m2, m3, m4))
 end
 
+
+# a permutation per for the
+#	order of the basis-vectors is chosen
+#	such that in every step the number of
+#	possible continuations is minimal,
+#	for j from per[i] to per[dim-1] the
+#	value f[i][j] in the fingerprint f is
+#	the number of vectors, which have the
+#	same scalar product with the
+#	basis-vectors per[0]...per[i-1] as the
+#	basis-vector j and the same length as
+#	this vector with respect to all
+#	invariant forms
+
+
+function fingerprint_backtrack!(D::Chamber)
+  n = rank(D.data.S)
+  V = walls(D)
+  gramS = gram_matrix(D.data.S)
+  lengths = fmpq[(v*gramS*transpose(v))[1,1] for v in V]
+  D.lengths = lengths
+  B = find_basis(V, n)
+  gramB = change_base_ring(ZZ, B*gramS*transpose(B))
+  D.gramB = gramB
+
+  per = Vector{Int}(undef, n)
+  for i in 1:n
+    per[i] = i
+  end
+
+  fp = zeros(Int, n, n)
+
+  # fp[1, i] = # vectors v such that v has same length as b_i for all forms
+  for i in 1:n
+    cvl = gramB[i,i]
+    fp[1, i] = count(x->x==cvl, lengths)
+
+  end
+
+  for i in 1:(n - 1)
+    # Find the minimal non-zero entry in the i-th row
+    mini = i
+    for j in (i+1):n
+      if fp[i, per[j]] < fp[i, per[mini]]
+        mini = j
+      end
+    end
+
+    per[mini], per[i] = per[i], per[mini]
+
+    # Set entries below the minimal entry to zero
+    for j in (i + 1):n
+      fp[j, per[i]] = 0
+    end
+
+    # Now compute row i + 1
+
+    for j in (i + 1):n
+      fp[i + 1, per[j]] = possible(D, per, i, per[j])
+    end
+  end
+
+  # Extract the diagonal
+
+  res = Vector{Int}(undef, n)
+
+  @inbounds for i in 1:n
+    res[i] = fp[i, per[i]]
+  end
+
+
+
+  #D.per = per
+
+  D.B = B[per,:]
+  D.gramB = gramB[per,per]
+  D.fp = fp[:,per]
+  D.fp_diagonal = res
+end
+
+
+function possible(D::Chamber, per, I, J)
+  vectors = walls(D)
+  lengths = D.lengths
+  gramB = D.gramB
+  gramS = D.data.gramS
+  n = length(vectors)
+  @assert n == length(lengths)
+
+  count = 0
+
+  tmp1 = zero(eltype(vectors[1]))
+  tmp2 = zero(eltype(vectors[1]))
+
+  for j in 1:n
+    lengthsj = lengths[j]
+    vectorsj = vectors[j]
+    good_scalar = true
+    if lengthsj != gramB[J, J]
+      continue
+    end
+
+    for i in 1:I
+      if (vectorsj*gramS*transpose(vectors[per[i]]))[1,1] != gramB[J,per[i]]
+        good_scalar = false
+        break
+      end
+    end
+
+    if !good_scalar
+      continue
+    end
+    count = count + 1
+
+    # length is correct
+  end
+  return count
+end
 
 ################################################################################
 # close vector functions
@@ -431,29 +561,92 @@ function is_in_G(S::ZLat, g::fmpz_mat)
   # return isone(gg) || gg == OD(-matrix(one(OD)))
 end
 
-Hecke.hom(D::Chamber, E::Chamber) = alg319(gram_matrix(D.data.SS), walls(D), walls(E), D.data.membership_test)
+Hecke.hom(D::Chamber, E::Chamber) = alg319(D, E)
+#alg319(gram_matrix(D.data.SS), D.B,D.gramB, walls(D), walls(E), D.data.membership_test)
 
-function myaut(D)
-  G = -D.data.gramS  # negative since the alg somehow assumes that the lengths are positive
-  basis = find_basis(walls(D), ncols(G))
-  basis_inv = inv(change_base_ring(QQ,basis))
-  gram_basis = basis*G*transpose(basis)
-  V = [(ZZ.(vec(i*basis_inv)),(i*G*transpose(i))[1,1]) for i in walls(D)]
-  C = Hecke.ZLatAutoCtx([gram_basis])
-  fl, Csmall = Hecke.try_init_small(C, true, ZZ(-1), true, V)
-  if fl
-    return Hecke.auto(Csmall)
-  end
-end
 
 aut(D::Chamber) = hom(D, D)
 
-# worker for hom and aut
-function alg319(gram::MatrixElem, raysD::Vector{fmpz_mat}, raysE::Vector{fmpz_mat}, membership_test)
+function alg319(gram::MatrixElem ,raysD::Vector{fmpz_mat}, raysE::Vector{fmpz_mat}, membership_test)
   n = ncols(gram)
   partial_homs = [zero_matrix(ZZ, 0, n)]
   basis = find_basis(raysD, n)
   gram_basis = basis*gram*transpose(basis)
+  return alg319(gram, basis, gram_basis, raysD, raysE, membership_test)
+end
+
+function alg319(D::Chamber, E::Chamber)
+  if !isdefined(D,:B)
+    fingerprint_backtrack!(D)  # compute a favorable basis
+  end
+  gram_basis = D.gramB
+  gram = D.data.gramS
+  fp = D.fp_diagonal
+  basis = D.B
+  n = ncols(gram)
+  raysD = walls(D)
+  raysE = walls(E)
+  partial_homs = [zero_matrix(ZZ, 0, n)]
+  # breadth first search
+  # Since we expect D and E to be isomorphic,
+  # a depth first search with early abort would be more efficient.
+  # for now this does not seem to be a bottleneck
+  for i in 1:n
+    @vprint :K3Auto 4 "level $(i-1), partial homs $(length(partial_homs)) \n"
+    partial_homs_new = fmpz_mat[]
+    for img in partial_homs
+      extensions = fmpz_mat[]
+      k = nrows(img)
+      gi = gram*transpose(img)
+      for r in raysE
+        if (r*gram*transpose(r))[1,1] != gram_basis[k+1,k+1] || (k>0 && r*gi != gram_basis[k+1,1:k])
+          continue
+        end
+        # now r has the correct inner products with what we need
+        push!(extensions, vcat(img,r))
+      end
+      if fp[i] != length(extensions)
+        continue
+      end
+      append!(partial_homs_new, extensions)
+    end
+    partial_homs = partial_homs_new
+  end
+  basisinv = inv(change_base_ring(QQ, basis))
+  homs = fmpz_mat[]
+  is_in_hom_D_E(fz) = all(r*fz in raysE for r in raysD)
+  vE = sum(raysE) # center of mass of the dual cone
+  vD = sum(raysD)
+  for f in partial_homs
+    f = basisinv*f
+    if denominator(f)!=1
+      continue
+    end
+    fz = change_base_ring(ZZ,f)
+    if !D.data.membership_test(fz)
+      continue
+    end
+    if !(vD*fz == vE)
+      continue
+    end
+    # The center of mass is an interior point
+    # Further it uniquely determines the chamber and is compatible with homomorphisms
+    # This is basically Remark 3.20
+    # -> but this is not true for the center of mass of the dual cone
+    # hence this extra check
+    if !is_in_hom_D_E(fz)
+      continue
+    end
+    push!(homs, fz)
+  end
+  @hassert :K3Auto 1 all(f*gram*transpose(f)==gram for f in homs)
+  return homs
+end
+
+# worker for hom and aut
+function alg319(gram::MatrixElem, basis::fmpz_mat, gram_basis::fmpq_mat ,raysD::Vector{fmpz_mat}, raysE::Vector{fmpz_mat}, membership_test)
+  n = ncols(gram)
+  partial_homs = [zero_matrix(ZZ, 0, n)]
   # breadth first search
   # Since we expect D and E to be isomorphic,
   # a depth first search with early abort would be more efficient.
@@ -497,6 +690,9 @@ function alg319(gram::MatrixElem, raysD::Vector{fmpz_mat}, raysE::Vector{fmpz_ma
     # Further it uniquely determines the chamber and is compatible with homomorphisms
     # This is basically Remark 3.20
     # -> but this is not true for the center of mass of the dual cone
+    if !is_in_hom_D_E(fz)
+      continue
+    end
     push!(homs, fz)
   end
   @hassert :K3Auto 1 all(f*gram*transpose(f)==gram for f in homs)
@@ -1063,6 +1259,7 @@ function K3Auto(L::ZLat, S::ZLat, w::fmpq_mat; entropy_abort=false, compute_OR=t
     push!(explored, D)
     nchambers = nchambers+1
     @vprint :K3Auto 3 "new weyl vector $(D.weyl_vector)\n"
+    @vprint :K3Auto 3 "$D\n"
 
     autD = aut(D)
     autD = [a for a in autD if !isone(a)]
@@ -1073,13 +1270,14 @@ function K3Auto(L::ZLat, S::ZLat, w::fmpq_mat; entropy_abort=false, compute_OR=t
       end
       @vprint :K3Auto 1 "Found a chamber with $(length(autD)) automorphisms\n"
       # compute the orbits
-      @vprint :K3Auto 2 "computing orbits"
+      @vprint :K3Auto 3 "computing orbits\n"
       Omega = [F(v) for v in walls(D)]
       W = gset(matrix_group(autD),Omega)
       vv = F(D.parent_wall)
       wallsDmodAutD = [representative(w).v for w in orbits(W) if !(vv in w)]
+      @vprint :K3Auto 3 "done\n"
     else
-      # the minus shouldnt be necessary ... but who knows?
+      # the minus shouldn't be necessary ... but who knows?
       wallsDmodAutD = (v for v in walls(D) if !(v==D.parent_wall || -v==D.parent_wall))
     end
     # compute the adjacent chambers to be explored
