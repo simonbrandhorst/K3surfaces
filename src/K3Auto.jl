@@ -283,11 +283,15 @@ function fingerprint_backtrack!(D::Chamber)
   n = rank(D.data.S)
   V = walls(D)
   gramS = gram_matrix(D.data.S)
+  B, indB = find_basis(V, n)
+  tmp = V[indB]
+  deleteat!(V, indB)
+  prepend!(V, tmp)
   lengths = fmpq[(v*gramS*transpose(v))[1,1] for v in V]
   D.lengths = lengths
-  B = find_basis(V, n)
   gramB = change_base_ring(ZZ, B*gramS*transpose(B))
   D.gramB = gramB
+  D.B = B
 
   per = Vector{Int}(undef, n)
   for i in 1:n
@@ -332,12 +336,12 @@ function fingerprint_backtrack!(D::Chamber)
 
   @inbounds for i in 1:n
     res[i] = fp[i, per[i]]
+    @assert res[i]>0
   end
 
 
 
   #D.per = per
-
   D.B = B[per,:]
   D.gramB = gramB[per,per]
   D.fp = fp[:,per]
@@ -354,10 +358,7 @@ function possible(D::Chamber, per, I, J)
   @assert n == length(lengths)
 
   count = 0
-
-  tmp1 = zero(eltype(vectors[1]))
-  tmp2 = zero(eltype(vectors[1]))
-
+  T = gramS*transpose(reduce(vcat,vectors[per[1:I]]))
   for j in 1:n
     lengthsj = lengths[j]
     vectorsj = vectors[j]
@@ -367,7 +368,7 @@ function possible(D::Chamber, per, I, J)
     end
 
     for i in 1:I
-      if (vectorsj*gramS*transpose(vectors[per[i]]))[1,1] != gramB[J,per[i]]
+      if (vectorsj*T[:,i])[1,1] != gramB[J,per[i]]
         good_scalar = false
         break
       end
@@ -520,7 +521,7 @@ end
 @doc Markdown.doc"""
     find_basis(row_matrices::Vector, dim)
 
-Return the first `dim` linearly independent vectors in row_matrices.
+Return the first `dim` linearly independent vectors in row_matrices and their indices.
 
 We assume that row_matrices consists of row vectors.
 """
@@ -530,18 +531,21 @@ function find_basis(row_matrices::Vector, dim::Integer)
   n = ncols(r)
   B = zero_matrix(base_ring(r), 0, n)
   rk = 0
-  for r in row_matrices
+  indices = Int[]
+  for i in 1:length(row_matrices)
+    r = row_matrices[i]
     Br = vcat(B, r)
     rk = rank(Br)
     if rk > nrows(B)
       B = Br
+      push!(indices, i)
     end
     if rk == dim
       break
     end
   end
-  @assert rk == dim
-  return B
+  @assert length(indices) == rk == dim
+  return B, indices
 end
 
 find_basis(row_matrices::Vector) = find_basis(row_matrices, ncols(row_matrices[1]))
@@ -570,7 +574,7 @@ aut(D::Chamber) = hom(D, D)
 function alg319(gram::MatrixElem ,raysD::Vector{fmpz_mat}, raysE::Vector{fmpz_mat}, membership_test)
   n = ncols(gram)
   partial_homs = [zero_matrix(ZZ, 0, n)]
-  basis = find_basis(raysD, n)
+  basis,_ = find_basis(raysD, n)
   gram_basis = basis*gram*transpose(basis)
   return alg319(gram, basis, gram_basis, raysD, raysE, membership_test)
 end
@@ -795,7 +799,7 @@ function _alg58_short_vector(data::BorcherdsData, w::fmpz_mat)
   mi = minimum(bounds)
   ma = maximum(bounds)
 
-  svN = Hecke._short_vectors_gram(Hecke.LatEnumCtx, G,mi,ma, Int64)
+  svN = Hecke._short_vectors_gram(Hecke.LatEnumCtx, G,mi,ma, fmpz)
   result = fmpq_mat[]
   # treat the special case of the zero vector by copy paste.
   if QQ(0) in bounds
@@ -1198,9 +1202,14 @@ Compute the automorphism group of a K3
 
 - `w` - initial Weyl vector
 """
-function K3Auto(L::ZLat, S::ZLat, w::fmpq_mat; entropy_abort=false, compute_OR=true, max_nchambers=-1)
+function K3Auto(L::ZLat, S::ZLat, w::fmpq_mat; compute_OR=true, entropy_abort=false, max_nchambers=-1)
   data = BorcherdsData(L, S, compute_OR)
   w = change_base_ring(ZZ,w*inverse_basis_matrix(L))
+  return K3Auto(data, w; entropy_abort=entropy_abort, max_nchambers=max_nchambers)
+end
+
+function K3Auto(data::BorcherdsData, w; entropy_abort=false, max_nchambers=-1)
+  S = data.S
   # for G-sets
   F = FreeModule(ZZ,rank(S))
   # initialization
@@ -1695,6 +1704,10 @@ function preprocessingK3Auto(S::ZLat, n::Integer; ample=nothing)
   # double check
   Q = orthogonal_submodule(S, lattice(V,h))
   @assert length(short_vectors(rescale(Q,-1),2))==0
+  if (h*gram_matrix(ambient_space(L))*transpose(weyl))[1,1] < 0
+    weyl = -weyl
+    u0 = -u0
+  end
   weyl1,u,hh = weyl_vector_non_degenerate(L,S,u0, weyl,h)
   return L,S,weyl1#L,S,u0, weyl,weyl1, h
 end
