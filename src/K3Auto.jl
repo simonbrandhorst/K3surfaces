@@ -1895,6 +1895,14 @@ function ample_class(S::ZLat)
       end
       a = fmpz(floor(a))
       b = fmpz(ceil(b))
+      if p(a) == 0  # catches the case of an integer root
+        a = a -1
+        @assert p(a) > 0
+      end
+      if p(b) == 0
+        b = b + 1
+        @assert p(b) > 0
+      end
       if abs(a) > abs(b)
         alpha = b
       else
