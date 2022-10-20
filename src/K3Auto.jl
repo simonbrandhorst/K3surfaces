@@ -1356,9 +1356,13 @@ function span_in_S(L, S, weyl)
   Ddual = vcat(Ddual, basis_matrix(R))
   Ddual = vcat(Ddual, -basis_matrix(R))
   Ddual = positive_hull(Ddual)
+  @vprint :K3Auto 3 "polarizing \n"
   D = polarize(Ddual)
   @vprint :K3Auto 3 "calculating rays\n"
-  gensN = [matrix(QQ, 1, degree(S), v) for v in vcat(Oscar.rays(D),lineality_space(D))]
+  Polymake.prefer("lrs") do
+    gensN = [matrix(QQ, 1, degree(S), v) for v in vcat(Oscar.rays(D),lineality_space(D))]
+  end
+  @vprint :K3Auto 3 "done\n"
   gensN = reduce(vcat, gensN, init=i)
   r = Hecke.rref!(gensN)
   gensN = gensN[1:r,:]
@@ -1709,7 +1713,37 @@ function preprocessingK3Auto(S::ZLat, n::Integer; ample=nothing)
     u0 = -u0
   end
   weyl1,u,hh = weyl_vector_non_degenerate(L,S,u0, weyl,h)
-  return L,S,weyl1#L,S,u0, weyl,weyl1, h
+
+
+  R = lll(Hecke.orthogonal_submodule(L, S))
+  weyl2 = solve_left(basis_matrix(L), weyl1)
+  if !iszero(basis_matrix(R)[1:end,1:rank(S)])
+    # the following completes the basis of R to a basis of L
+    basis1 = complete_to_basis(change_base_ring(ZZ,basis_matrix(R)),change_base_ring(ZZ,basis_matrix(L1)))
+    basis = vcat(basis1[rank(R)+1:end,:],basis1[1:rank(R),:])
+    L2 = lattice(ambient_space(L), basis)
+
+    # Assure that L has the standard basis.
+    L3 = Zlattice(gram=gram_matrix(L2))
+    V = ambient_space(L3)
+    S = lattice(V, basis_matrix(S) * inverse_basis_matrix(L2))
+
+    L = L3
+  else
+    L1 = Zlattice(gram=gram_matrix(L))
+    V = ambient_space(L1)
+    S = lattice(V, basis_matrix(S) * inverse_basis_matrix(L))
+    L = L1
+  end
+
+  SS = Zlattice(gram=gram_matrix(S))
+
+  # precomputations
+  R = lll(Hecke.orthogonal_submodule(L, S))
+
+
+
+  return L,S,weyl2#L,S,u0, weyl,weyl1, h
 end
 
 
