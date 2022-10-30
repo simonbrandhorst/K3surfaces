@@ -1,4 +1,4 @@
-export weyl_vector, K3Auto, common_invariant, separating_hyperplanes, walls, fingerprint, adjacent_chamber, aut, has_zero_entropy
+export weyl_vector, K3Auto, common_invariant, separating_hyperplanes, walls, adjacent_chamber, aut, has_zero_entropy
 import Oscar: rays
 # set_assert_level(:K3Auto, 0)
 # set_verbose_level(:K3Auto, 2)
@@ -1359,9 +1359,7 @@ function span_in_S(L, S, weyl)
   @vprint :K3Auto 3 "polarizing \n"
   D = polarize(Ddual)
   @vprint :K3Auto 3 "calculating rays\n"
-  Polymake.prefer("lrs") do
-    gensN = [matrix(QQ, 1, degree(S), v) for v in vcat(Oscar.rays(D),lineality_space(D))]
-  end
+  gensN = [matrix(QQ, 1, degree(S), v) for v in vcat(Oscar.rays(D),lineality_space(D))]
   @vprint :K3Auto 3 "done\n"
   gensN = reduce(vcat, gensN, init=i)
   r = Hecke.rref!(gensN)
@@ -1657,10 +1655,12 @@ function find_section(L::ZLat, f)
 end
 
 @doc Markdown.doc"""
-    preprocessingK3Auto(S::ZLat, n::Integer)
+    preprocessingK3Auto(S::ZLat, n::Integer) -> ZLat, ZLat, fmpq_mat
 
-Return an embedding of `S` into an even unimodular, hyperbolic lattice L of rank
-n as well as an `S`-nondegenerate Weyl vector.
+Return an embedding of `S` into an even unimodular, hyperbolic lattice `L` of
+rank `n` as well as an `S`-nondegenerate Weyl-vector.
+
+`n` has to be one of 10, 18, or 26
 """
 function preprocessingK3Auto(S::ZLat, n::Integer; ample=nothing)
   @req n in [10,18,26] "n must be one of 10, 18 or 26"
@@ -1975,9 +1975,6 @@ end
 
 function check_zero_entropy(candidate::ZLat, filename="")
   z, data, K3Autgrp, chambers, rational_curves = has_zero_entropy(candidate)
-  chambers = reduce(append!,values(chambers),init=Chamber[])
-  chambers = [c.weyl_vector for c in chambers]
-  save("$(filename).data", [data.L, data.S, collect(K3Autgrp), chambers, collect(rational_curves)])
   io = open(filename, "w")
   println(io, gram_matrix(candidate))
   if z > 0
@@ -1988,6 +1985,23 @@ function check_zero_entropy(candidate::ZLat, filename="")
     println(io, "hyperbolic")
   end
   close(io)
+  chambers = reduce(append!,values(chambers),init=Chamber[])
+  chambers = [c.weyl_vector for c in chambers]
+  # write at most d chambers at once to save ram
+  d = 1000000
+  if length(chambers) < d
+    save("$(filename).data", [data.L, data.S, collect(K3Autgrp), chambers, collect(rational_curves)])
+  else
+    save("$(filename).data", [data.L, data.S, collect(K3Autgrp), collect(rational_curves)])
+    n = length(chambers)
+    k, r = divrem(n, d)
+    for i in 1:k
+      save("$(filename)_chambers_$(i).data", chambers[(i-1)*d+1:i*d])
+    end
+    if r > 0
+      save("$(filename)_chambers_$(k+1).data", chambers[k*d+1:end])
+    end
+  end
 end
 
 function check_zero_entropy(candidates::Vector,postfix="",wa="a")
