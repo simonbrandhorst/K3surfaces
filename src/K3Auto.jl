@@ -2006,12 +2006,8 @@ function check_zero_entropy(candidate::ZLat, filename=""; n=26)
   chambers = reduce(append!,values(chambers),init=Chamber[])
 
   io = open("$(filename).chambers", "w")
-  for c in chambers
-    s = string("[",sprint(print, (weyl_vector(c))), ", ", sprint(print, reduce(vcat, walls(c))),", ",c.parent_wall,"]","\n")
-    write(io, s)
-  end
+  write_chambers(chambers, io)
   close(io)
-
 
 
   chambers = [c.weyl_vector for c in chambers]
@@ -2029,6 +2025,13 @@ function check_zero_entropy(candidate::ZLat, filename=""; n=26)
     if r > 0
       save("$(filename)_chambers_$(k+1).data", chambers[k*d+1:end])
     end
+  end
+end
+
+function write_chambers(chambers, io)
+  for c in chambers
+    s = string("[",sprint(print, (weyl_vector(c))), ", ", sprint(print, reduce(vcat, walls(c))),", ",c.parent_wall,"]","\n")
+    write(io, s)
   end
 end
 
