@@ -1,4 +1,5 @@
-export weyl_vector, K3Auto, common_invariant, separating_hyperplanes, walls, adjacent_chamber, aut, has_zero_entropy
+export weyl_vector, K3Auto, common_invariant, separating_hyperplanes, walls,
+      adjacent_chamber, aut, has_zero_entropy, Chamber, ample_class
 import Oscar: rays
 # set_assert_level(:K3Auto, 0)
 # set_verbose_level(:K3Auto, 2)
@@ -55,13 +56,13 @@ function BorcherdsData(L::ZLat, S::ZLat, compute_OR::Bool=true)
     # Assure that L has the standard basis.
     L3 = Zlattice(gram=gram_matrix(L2))
     V = ambient_space(L3)
-    S = lattice(V, basis_matrix(S) * inverse_basis_matrix(L2))
+    S = lattice(V, basis_matrix(S) * inv(basis_matrix(L2)))
 
     L = L3
   else
     L1 = Zlattice(gram=gram_matrix(L))
     V = ambient_space(L1)
-    S = lattice(V, basis_matrix(S) * inverse_basis_matrix(L))
+    S = lattice(V, basis_matrix(S) * inv(basis_matrix(L)))
     L = L1
   end
 
@@ -193,6 +194,8 @@ function walls(D::Chamber)
   end
   return D.walls
 end
+
+weyl_vector(D::Chamber) = D.weyl_vector
 
 function Oscar.rays(D::Chamber)
   r = reduce(vcat, walls(D), init=zero_matrix(ZZ,0,rank(D.data.SS)))
@@ -724,6 +727,7 @@ function _alg58(L::ZLat, S::ZLat, R::ZLat, prRdelta, w)
   Sdual = dual(S)
   rkR = rank(R)
   delta_w = fmpq_mat[]
+  iB = inv(basis_matrix(L))
   for c in n_R
     cm = -c
     for (vr0,vsquare) in prRdelta
@@ -740,7 +744,7 @@ function _alg58(L::ZLat, S::ZLat, R::ZLat, prRdelta, w)
         Sdual_na = short_vectors_affine(Sdual, w, 1 - a, -2 - c)
         for vs in Sdual_na
           vv = vs +  vr
-          if myin(vec(vv),L)
+          if all(denominator(i)==1 for i in collect(vv*iB))
             push!(delta_w, vs)
           end
         end
@@ -1049,6 +1053,7 @@ function is_S_nondegenerate(L::ZLat, S::ZLat, w::fmpq_mat)
 end
 
 function inner_point_in_S(L::ZLat, S::ZLat, w::fmpq_mat)
+  # can we get a small inner point?
   R = Hecke.orthogonal_submodule(L, S)
   Delta_w = _alg58(L, S, R, w)
   V = ambient_space(L)
@@ -1190,21 +1195,51 @@ function complete_to_basis(B::fmpz_mat,C::fmpz_mat)
   return basis
 end
 
+@doc Markdown.doc"""
+    K3_surface_automorphism_group(S::ZLat; [ample_class]) -> generators, minus_2_classes, chambers
+
+Return generators for the automorphism group of a very-general $S$-polarized K3 surface.
+
+Further return representatives of the `Aut(X)`-orbits of (-2)-curves on `X` and
+an almost fundamental domain for the action of Aut(X) on the nef cone given by a
+list of chambers.
+
+Here very general means that `Num(X)` is isomorphic to `S` and the image of
+$Aut(X) \to H^0(X,\Omega^2_X)$ is of order at most 2.
+
+The function returns generators for the image of
+
+\[f: Aut(X) \to O(Num(X)) \]
+
+Note that under our genericity assumptions the kernel of $f$ is of order at most $2$.
+If an ample class is given, then the generators returned preserve it.
+
+Note that this kind of computation can be very expensive.
+"""
+function K3_surface_automorphism_group(S::ZLat)
+  return K3Auto(S, n=26 ,compute_OR=false)
+end
+
 function K3Auto(S::ZLat, n::Integer; kw...)
   @req n in [10,18,26] "n(=$(n)) must be one of 10,18 or 26"
   L, S, weyl = preprocessingK3Auto(S, n)
-  A = K3Auto(L,S,weyl; kw...)
+  A = K3Auto(L, S, weyl; kw...)
   return collect(A[2]),reduce(append!,values(A[3]),init=Chamber[]), collect(A[4])
 end
 
 @doc Markdown.doc"""
+    K3Auto(L::ZLat, S::ZLat, w::fmpq_mat; compute_OR=true, entropy_abort=false, max_nchambers=-1)
+
 Compute the automorphism group of a K3
 
 - `w` - initial Weyl vector
+- `L` - even, unimodular, hyperbolic lattice of rank 10,18 or 26
+- `S` - a sublattice of `L`
+
 """
 function K3Auto(L::ZLat, S::ZLat, w::fmpq_mat; compute_OR=true, entropy_abort=false, max_nchambers=-1)
   data = BorcherdsData(L, S, compute_OR)
-  w = change_base_ring(ZZ,w*inverse_basis_matrix(L))
+  w = change_base_ring(ZZ, w*inv(basis_matrix(L)))
   return K3Auto(data, w; entropy_abort=entropy_abort, max_nchambers=max_nchambers)
 end
 
@@ -1425,6 +1460,8 @@ function weyl_vector_non_degenerate(L::ZLat, S::ZLat, u0::fmpq_mat, weyl::fmpq_m
 end
 
 @doc Markdown.doc"""
+    embed_in_unimodular(S::ZLat, n)
+
 Embed `S` into an hyperbolic, even unimodular lattice `L` of rank $n$.
 
 If `n` is `26`, then the orthogonal complement $R = S^\perp$ in `L` has a (-2)-vector.
@@ -1462,12 +1499,11 @@ end
 
 
 @doc Markdown.doc"""
-    weyl_vector(L::ZLat, U0::ZLat)
+    weyl_vector(L::ZLat, U0::ZLat) -> weyl, u0
 
-Return a Weyl vector of `L`.
+Return a Weyl vector of `L` as well as an interior point of the corresponding chamber.
 
-For `L` of signature (1,25) it uses the 24 holy constructions of the Leech
-lattice.
+For `L` of signature (1,25) it uses the 24 holy constructions of the Leech lattice.
 
 Input:
 
@@ -1701,7 +1737,8 @@ function preprocessingK3Auto(S::ZLat, n::Integer; ample=nothing)
     #find a random ample vector ... or use a perturbation of the weyl vector?
     @vprint :K3Auto 1 "searching a random ample vector in S\n"
     h = ample_class(S)
-    @vprint :K3Auto 1 "ample vector: $h \n"
+    hS = solve_left(basis_matrix(S),h)
+    @vprint :K3Auto 1 "ample vector: $hS \n"
   else
     h = ample*basis_matrix(S)
   end
@@ -1726,13 +1763,13 @@ function preprocessingK3Auto(S::ZLat, n::Integer; ample=nothing)
     # Assure that L has the standard basis.
     L3 = Zlattice(gram=gram_matrix(L2))
     V = ambient_space(L3)
-    S = lattice(V, basis_matrix(S) * inverse_basis_matrix(L2))
+    S = lattice(V, basis_matrix(S) * inv(basis_matrix(L2)))
 
     L = L3
   else
     L1 = Zlattice(gram=gram_matrix(L))
     V = ambient_space(L1)
-    S = lattice(V, basis_matrix(S) * inverse_basis_matrix(L))
+    S = lattice(V, basis_matrix(S) * inv(basis_matrix(L)))
     L = L1
   end
 
@@ -1743,26 +1780,7 @@ function preprocessingK3Auto(S::ZLat, n::Integer; ample=nothing)
 
 
 
-  return L,S,weyl2#L,S,u0, weyl,weyl1, h
-end
-
-
-function parse_zero_entropy(filename="/home/simon/Dropbox/Math/MyPapers/zero entropy/CandidatesZeroEntropy_elliptic")
-  io = open(filename,"r")
-  s = read(io, String)
-  s = split(s,"\n")
-  s = [a for a in s if length(a) > 0 && a[1:1]!="/"]
-  s = [split(a," ") for a in s]
-  s = [[ZZ(parse(Int64,i)) for i in a] for a in s]
-  res = []
-  u = ZZ[0 1; 1 -2]
-  for g in s
-    n = Int64(sqrt(ZZ(length(g))))
-    m = matrix(ZZ,n,n,g)
-    m = block_diagonal_matrix([u,-m])
-    push!(res,m)
-  end
-  return res
+  return L,S,weyl2
 end
 
 
@@ -1966,15 +1984,15 @@ function has_zero_entropy(S; rank_unimod=26)
   L, S, weyl = preprocessingK3Auto(S, rank_unimod)
   @vprint :K3Auto 1 "Weyl vector: $(weyl)\n"
   data, K3Autgrp, chambers, rational_curves, _ = K3Auto(L,S,weyl, entropy_abort=false)
-  C = lattice(rational_span(S),common_invariant(K3Autgrp)[2])
+  C = lattice(rational_span(S), common_invariant(K3Autgrp)[2])
   d = diagonal(rational_span(C))
 
   return maximum(push!([sign(i) for i in d],-1)), data, K3Autgrp, chambers, rational_curves
 end
 
 
-function check_zero_entropy(candidate::ZLat, filename="")
-  z, data, K3Autgrp, chambers, rational_curves = has_zero_entropy(candidate)
+function check_zero_entropy(candidate::ZLat, filename=""; n=26)
+  z, data, K3Autgrp, chambers, rational_curves = has_zero_entropy(candidate, rank_unimod=n)
   io = open(filename, "w")
   println(io, gram_matrix(candidate))
   if z > 0
@@ -1986,9 +2004,19 @@ function check_zero_entropy(candidate::ZLat, filename="")
   end
   close(io)
   chambers = reduce(append!,values(chambers),init=Chamber[])
+
+  io = open("$(filename).chambers", "w")
+  for c in chambers
+    s = string("[",sprint(print, (weyl_vector(c))), ", ", sprint(print, reduce(vcat, walls(c))),", ",c.parent_wall,"]","\n")
+    write(io, s)
+  end
+  close(io)
+
+
+
   chambers = [c.weyl_vector for c in chambers]
   # write at most d chambers at once to save ram
-  d = 1000000
+  d = 100000
   if length(chambers) < d
     save("$(filename).data", [data.L, data.S, collect(K3Autgrp), chambers, collect(rational_curves)])
   else
@@ -2004,36 +2032,24 @@ function check_zero_entropy(candidate::ZLat, filename="")
   end
 end
 
-function check_zero_entropy(candidates::Vector,postfix="",wa="a")
-  ioelliptic = open("elliptic$(postfix)", wa)
-  ioparabolic = open("parabolic$(postfix)", wa)
-  iohyperbolic = open("hyperbolic$(postfix)", wa)
-  close(ioelliptic)
-  close(ioparabolic)
-  close(iohyperbolic)
-  for S in candidates
-    e = has_zero_entropy(S)[1]
-    ioelliptic = open("elliptic$(postfix)", "a")
-    ioparabolic = open("parabolic$(postfix)", "a")
-    iohyperbolic = open("hyperbolic$(postfix)", "a")
-    if e>0
-      println(ioelliptic, gram_matrix(S))
-    elseif e==0
-      println(ioparabolic, gram_matrix(S))
-    elseif e < 0
-      println(iohyperbolic, gram_matrix(S))
+function parse_chambers(D::BorcherdsData, filename)
+  io = open(filename,"r")
+  C = []
+  r = rank(D.S)
+  while true
+    b = readline(io)
+    if length(b)==0
+      break
     end
-    close(ioelliptic)
-    close(ioparabolic)
-    close(iohyperbolic)
+    s = eval(Meta.parse(b))
+    n = length(s[2])
+    k = divexact(n, r)
+    weyl = matrix(ZZ, 1, length(s[1]), s[1])
+    walls = matrix(ZZ,k,r,s[2])
+    walls = [walls[i,:] for i in 1:k]
+    previous_wall = matrix(ZZ, 1, r, s[3])
+    c = Chamber(D, weyl, previous_wall, walls)
+    push!(C,c)
   end
-end
-
-@attr function inverse_basis_matrix(L::ZLat)
-  @hassert :K3Auto 1 degree(L) == rank(L)
-  return inv(basis_matrix(L))::fmpq_mat
-end
-
-function myin(v, L::ZLat)
-  return all(denominator(i)==1 for i in v*inverse_basis_matrix(L))
+  return C
 end
