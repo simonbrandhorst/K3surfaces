@@ -14,7 +14,7 @@ include("./Serialize.jl")
 
 function __init__()
   Oscar.registerSerializationType(K3surfaces.Chamber, "Chamber")
-  Oscar.registerSerializationType(K3surfaces.BorcherdsData, "BorcherdsData")
+  Oscar.registerSerializationType(K3surfaces.BorcherdsCtx, "BorcherdsCtx")
   Hecke.add_assert_scope(:K3Auto)
   Hecke.add_verbose_scope(:K3Auto)
   Hecke.set_verbose_level(:K3Auto, 2)

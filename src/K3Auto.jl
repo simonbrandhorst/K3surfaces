@@ -1,5 +1,5 @@
 export weyl_vector, K3Auto, common_invariant, separating_hyperplanes, walls,
-      adjacent_chamber, aut, has_zero_entropy, Chamber, ample_class
+      adjacent_chamber, aut, has_zero_entropy, K3Chamber, chamber, ample_class
 import Oscar: rays
 # set_assert_level(:K3Auto, 0)
 # set_verbose_level(:K3Auto, 2)
@@ -10,11 +10,34 @@ import Oscar: rays
 ################################################################################
 
 @doc Markdown.doc"""
-    BorcherdsData
+    BorcherdsCtx
 
-Contains all the data necessary to run Borcherd's method.
+Contains all the data necessary to run Borcherds' method.
+
+The assumptions are as follows:
+
+- `L::ZLat`: even, hyperbolic, unimodular `Z`-lattice of rank n = 10, 18 or 26
+  with basis given by the n x n standard basis
+
+- `S::ZLat`: primitive sublattice
+
+- `R::ZLat`: the orthogonal complement of `S` in `L`
+  We assume that the basis of R consists of the last rank R standard basis vectors.
+- `SS::ZLat`: lattice with standard basis and same gram matrix as `S`.
+
+- `deltaR::Vector{fmpz_mat}`:
+
+- `dualDeltaR::Vector{fmpz_mat}`:
+
+- `prRdelta::Vector{Tuple{fmpq_mat,fmpq}}`:
+
+- `membership_test`: takes the `s x s` matrix describing `g: S -> S` with respect
+  to the basis of `S` and returns whether `g` lies in the group `G`.
+
+- `prS::fmpq_mat`: `prS: L --> S^\vee` given with respect to the (standard)
+  basis of `L` and the basis of `S`
 """
-mutable struct BorcherdsData
+mutable struct BorcherdsCtx
   L::ZLat
   S::ZLat
   SS::ZLat
@@ -23,7 +46,7 @@ mutable struct BorcherdsData
   dualDeltaR::Vector{fmpz_mat}
   prRdelta::Vector{Tuple{fmpq_mat,fmpq}}
   membership_test
-  gramL::fmpz_mat
+  gramL::fmpz_mat  # avoid a few conversions because gram_matrix(::ZLat) -> fmpq_mat
   gramS::fmpz_mat
   prS::fmpq_mat
   compute_OR::Bool
@@ -32,15 +55,24 @@ mutable struct BorcherdsData
   # as non-allocating as possible.
 end
 
-@doc Markdown.doc"""
-    BorcherdsData(L::ZLat, S::ZLat, compute_OR::Bool=true) -> BorcherdsData
+function Base.show(io::IOContext, d::BorcherdsCtx)
+  print(io, "BorcherdsCtx: dim(L) = $(rank(d.L)), rank(S) = $(rank(d.S)), det(S) = $(det(d.S))")
+end
 
-If `compute_OR` is `false`, then `G` is the subgroup of the orthogonal group of `S`
-acting as $\pm 1$ on the discriminant group.
-If `compute_OR` is `true`, then `G` consists the subgroup consisting of
-isometries of `S` that can be extended to isometries of `L`.
+@doc Markdown.doc"""
+    BorcherdsCtx(L::ZLat, S::ZLat, compute_OR::Bool=true) -> BorcherdsCtx
+
+Return the context for Borcherds' method.
+
+# Arguments
+- `L::ZLat`: an even, hyperbolic, unimodular `Z`-lattice of rank 10, 18, or 26
+- `S::ZLat`: a primitive sublattice of `L` in the same ambient space
+- if `compute_OR` is `false`, then `G` is the subgroup of the orthogonal group
+  of `S` acting as $\pm 1$ on the discriminant group.
+  If `compute_OR` is `true`, then `G` consists the subgroup consisting of
+  isometries of `S` that can be extended to isometries of `L`.
 """
-function BorcherdsData(L::ZLat, S::ZLat, compute_OR::Bool=true)
+function BorcherdsCtx(L::ZLat, S::ZLat, compute_OR::Bool=true)
   # transform L to have the standard basis
   # we assume that the basis of L is obtained by completing a basis of R
   # hence we can throw away the R coordinates of a weyl vector when projecting to S
@@ -103,7 +135,7 @@ function BorcherdsData(L::ZLat, S::ZLat, compute_OR::Bool=true)
       membership_test = (g->ODSS(hom(DSS,DSS,[DSS(vec(matrix(QQ, 1, ds, lift(x))*g)) for x in gens(DSS)])) in img)
     end
   else
-    membership_test(g) = is_in_G(SS,g)
+    membership_test(g) = is_pm1_on_discr(SS,g)
   end
 
   d = exponent(discriminant_group(S))
@@ -120,43 +152,56 @@ function BorcherdsData(L::ZLat, S::ZLat, compute_OR::Bool=true)
   gramS = change_base_ring(ZZ,gram_matrix(S))
   deltaR = [change_base_ring(ZZ,matrix(QQ, 1, rkR, v[1])*basis_matrix(R)) for v in short_vectors(rescale(R,-1),2)]
   dualDeltaR = [gramL*transpose(r) for r in deltaR]
-  return BorcherdsData(L, S, SS, R, deltaR, dualDeltaR, prRdelta, membership_test,gramL,gramS,prS,compute_OR)
+  return BorcherdsCtx(L, S, SS, R, deltaR, dualDeltaR, prRdelta, membership_test,gramL,gramS,prS,compute_OR)
 end
 
 
 
+@doc Markdown.doc"""
+    K3Chamber
 
-mutable struct Chamber
+The chamber in `S` induced from a Weyl vector in `L`.
+"""
+mutable struct K3Chamber
   weyl_vector::fmpz_mat
   # for v in walls, the corresponding half space is defined by the equation
   # x * gram_matrix(S)*v >= 0, further v is primitive in S (and, in contrast to Shimada, not S^\vee)
   walls::Vector{fmpz_mat}
-  lengths::Vector{fmpq}
-  B::fmpz_mat # basis
-  gramB::fmpz_mat
+  lengths::Vector{fmpq}  #
+  B::fmpz_mat # QQ-basis consisting of rays #... why do we bother to save this?
+  gramB::fmpz_mat # the basis matrix inferred from the QQ-basis
   parent_wall::fmpz_mat # for the spanning tree
-  data::BorcherdsData
-  fp::Matrix{Int} # fingerprint backtrack
+  data::BorcherdsCtx
+  fp::Matrix{Int} # fingerprint for the backtrack search
   #per::Vector{Int}  # permutation
   fp_diagonal::Vector{Int}
 
-  function Chamber()
+  # TODO: Be more memory efficient and store only the indices for the
+  # basis matrix and the permutation.
+  # I am not sure if storing gram matrix stuff in memory actually increases performance...
+
+  function K3Chamber()
     return new()
   end
 end
 
-export Chamber, BorcherdsData
+export chamber, BorcherdsCtx
 
-function Chamber(data::BorcherdsData, weyl_vector::fmpz_mat, parent_wall::fmpz_mat)
-  D = Chamber()
+@doc Markdown.doc"""
+    chamber(data::BorcherdsCtx, weyl_vector::fmpz_mat, [parent_wall::fmpz_mat, walls::Vector{fmpz_mat}])
+
+Return the chamber with the given weyl vector.
+"""
+function chamber(data::BorcherdsCtx, weyl_vector::fmpz_mat, parent_wall::fmpz_mat=zero_matrix(ZZ, 0, 0))
+  D = K3Chamber()
   D.weyl_vector = weyl_vector
   D.parent_wall = parent_wall
   D.data = data
   return D
 end
 
-function Chamber(data::BorcherdsData, weyl_vector::fmpz_mat, parent_wall::fmpz_mat, walls::Vector{fmpz_mat})
-  D = Chamber()
+function chamber(data::BorcherdsCtx, weyl_vector::fmpz_mat, parent_wall::fmpz_mat, walls::Vector{fmpz_mat})
+  D = K3Chamber()
   D.weyl_vector = weyl_vector
   D.parent_wall = parent_wall
   D.data = data
@@ -164,8 +209,8 @@ function Chamber(data::BorcherdsData, weyl_vector::fmpz_mat, parent_wall::fmpz_m
   return D
 end
 
-# needed to create sets of Chambers
-function Base.hash(C::Chamber)
+# needed to create sets of K3Chambers
+function Base.hash(C::K3Chamber)
   return hash(C.weyl_vector[:,1:rank(C.data.S)])
 end
 
@@ -173,21 +218,26 @@ end
 # project to the same point in S
 # By the choice of our coordinates this projection is determined
 # by the first rank(S) coordinates.
-function Base.:(==)(C::Chamber,D::Chamber)
-  @req C.data===D.data "must be in the same space"
+function Base.:(==)(C::K3Chamber, D::K3Chamber)
+  @req C.data===D.data "K3Chambers do not have the same context"
   return C.weyl_vector[:,1:rank(C.data.S)] == D.weyl_vector[:,1:rank(D.data.S)]
 end
 
 @doc Markdown.doc"""
-    walls(D::Chamber) -> Vector{fmpz_mat}
+    walls(D::K3Chamber) -> Vector{fmpz_mat}
 
-Return the walls of the chamber `D`.
+Return the walls of the chamber `D`, i.e. its facets.
 
 The corresponding half space of the wall defined by `v` in `walls(D)` is
-$\{x \in S \otimes \RR |  <x,v> \geq 0\}$. Note that `v` is given with respect
-to the basis of `S` and is primitive in `S`.
+
+```Math
+\{x \in S \otimes \mathbb{R} |  \langle x,v \rangle  \geq 0\}.
+```
+
+`v` is given with respect to the basis of `S` and is primitive in `S`.
+Note that Shimada follows a different convention and takes `v` primitive in `S^\vee`.
 """
-function walls(D::Chamber)
+function walls(D::K3Chamber)
   if !isdefined(D, :walls)
     D.walls = _walls_of_chamber(D.data, D.weyl_vector)
     @assert length(D.walls)>=rank(D.data.S) "$(D.weyl_vector)"
@@ -195,11 +245,18 @@ function walls(D::Chamber)
   return D.walls
 end
 
-weyl_vector(D::Chamber) = D.weyl_vector
+weyl_vector(D::K3Chamber) = D.weyl_vector
 
-function Oscar.rays(D::Chamber)
+@doc Markdown.doc"""
+    rays(D::K3Chamber)
+
+Return the rays of the induced chamber `D`.
+
+They are represented as primitive row vectors with respect to the basis of `S`.
+"""
+function Oscar.rays(D::K3Chamber)
   r = reduce(vcat, walls(D), init=zero_matrix(ZZ,0,rank(D.data.SS)))
-  rQ = change_base_ring(QQ,r)*gram_matrix(D.data.SS)
+  rQ = change_base_ring(QQ, r) * gram_matrix(D.data.SS)
   C = positive_hull(rQ)
   Cd = polarize(C)
   L = rays(Cd)
@@ -212,7 +269,7 @@ function Oscar.rays(D::Chamber)
   return Lz
 end
 
-function Base.show(io::IO, c::Chamber)
+function Base.show(io::IO, c::K3Chamber)
   if isdefined(c,:walls)
     print(IOContext(io, :compact => true), "Chamber  in dimension $(length(walls(c)[1])) with $(length(walls(c))) walls")
   else
@@ -221,13 +278,13 @@ function Base.show(io::IO, c::Chamber)
 end
 
 @doc Markdown.doc"""
-    fingerprint(D::Chamber)
+    fingerprint(D::K3Chamber)
 
-Return the hash of the fingerprint of this chamber.
+Return the fingerprint of this chamber.
 
 The fingerprint is an invariant computed from the rays and their inner products.
 """
-function fingerprint(D::Chamber)
+function fingerprint(D::K3Chamber)
   v = sum(walls(D))
   G = D.data.gramS
   m1 = (v*G*transpose(v))[1,1]
@@ -264,25 +321,30 @@ function fingerprint(D::Chamber)
   # by working the the images of the rays in the discriminant group and their
   # G-orbits. Perhaps one has to switch to S^\vee primitive vectors in this case.
   =#
-  return hash((m1, m2, m3, m4))
+  return (m1, m2, m3, m4)
 end
 
 
-# a permutation per for the
-#	order of the basis-vectors is chosen
-#	such that in every step the number of
-#	possible continuations is minimal,
-#	for j from per[i] to per[dim-1] the
-#	value f[i][j] in the fingerprint f is
-#	the number of vectors, which have the
-#	same scalar product with the
-#	basis-vectors per[0]...per[i-1] as the
-#	basis-vector j and the same length as
-#	this vector with respect to all
-#	invariant forms
+"""
+Compute the fingerprint of Plesken-Souvignier and change the basis
+matrix and gram matrix accordingly.
 
+It is computed from the walls and the gram matrix of `S`.
 
-function fingerprint_backtrack!(D::Chamber)
+a permutation per for the
+order of the basis-vectors is chosen
+such that in every step the number of
+possible continuations is minimal,
+for j from per[i] to per[dim-1] the
+value f[i][j] in the fingerprint f is
+the number of vectors, which have the
+same scalar product with the
+basis-vectors per[0]...per[i-1] as the
+basis-vector j and the same length as
+this vector with respect to all
+invariant forms
+"""
+function fingerprint_backtrack!(D::K3Chamber)
   n = rank(D.data.S)
   V = walls(D)
   gramS = gram_matrix(D.data.S)
@@ -313,7 +375,7 @@ function fingerprint_backtrack!(D::Chamber)
   for i in 1:(n - 1)
     # Find the minimal non-zero entry in the i-th row
     mini = i
-    for j in (i+1):n
+    @inbounds for j in (i+1):n
       if fp[i, per[j]] < fp[i, per[mini]]
         mini = j
       end
@@ -322,7 +384,7 @@ function fingerprint_backtrack!(D::Chamber)
     per[mini], per[i] = per[i], per[mini]
 
     # Set entries below the minimal entry to zero
-    for j in (i + 1):n
+    @inbounds for j in (i + 1):n
       fp[j, per[i]] = 0
     end
 
@@ -344,6 +406,7 @@ function fingerprint_backtrack!(D::Chamber)
 
 
 
+
   #D.per = per
   D.B = B[per,:]
   D.gramB = gramB[per,per]
@@ -351,8 +414,13 @@ function fingerprint_backtrack!(D::Chamber)
   D.fp_diagonal = res
 end
 
+"""
+    possible(D::K3Chamber, per, I, J) -> Int
 
-function possible(D::Chamber, per, I, J)
+Return the number of possible extensions of an `n`-partial isometry to
+an `n+1`-partial one.
+"""
+function possible(D::K3Chamber, per, I, J)
   vectors = walls(D)
   lengths = D.lengths
   gramB = D.gramB
@@ -392,16 +460,16 @@ end
 ################################################################################
 
 @doc Markdown.doc"""
-    quadratic_triple -> Vector{Tuple{Vector{Int},fmpq}}
+    enumerate_quadratic_triple -> Vector{Tuple{Vector{Int}, fmpq}}
 
-Return $\{x \in Z^n : x Q x^T + 2xb^T + c <=0\}$.
+Return $\{x \in \mathbb Z^n : x Q x^T + 2xb^T + c <=0\}$.
 
-Input:
-- `Q` - positive definite matrix
-- `b` - vector
-- `c` - rational number
+#Input:
+- `Q`: positive definite matrix
+- `b`: row vector
+- `c`: rational number
 """
-function quadratic_triple(Q, b, c; algorithm=:short_vectors, equal=false)
+function enumerate_quadratic_triple(Q, b, c; algorithm=:short_vectors, equal=false)
   if algorithm == :short_vectors
     L, p, dist = Hecke._convert_type(Q, b, QQ(c))
     #@vprint :K3Auto 1 ambient_space(L), basis_matrix(L), p, dist
@@ -415,15 +483,26 @@ function quadratic_triple(Q, b, c; algorithm=:short_vectors, equal=false)
 end
 
 @doc Markdown.doc"""
-    short_vectors_affine
+    short_vectors_affine(S::ZLat, v::MatrixElem, alpha, d)
+    short_vectors_affine(gram::MatrixElem, v::MatrixElem, alpha, d)
 
-Return $\{x \in S : x^2=d, x.v=\alpha \}$.
+Return the vectors of squared length `d` in the given affine hyperplane.
 
-- `v` - row vector with $v^2 > 0$
+```Math
+\{x \in S : x^2=d, x.v=\alpha \}.
+```
+The matrix version takes `S` with standard basis and the given gram matrix.
 
-Algorithm 2.2 in [Shimada]
+# Arguments
+- `v`: row vector with $v^2 > 0$
+- `S`: a hyperbolic `Z`-lattice
+
+The output is given in the ambient representation.
+
+The implementation is based on Algorithm 2.2 in [Shimada](@cite)
 """
-function short_vectors_affine(S::ZLat, v::MatrixElem, alpha::fmpq, d)
+function short_vectors_affine(S::ZLat, v::MatrixElem, alpha, d)
+  alpha = QQ(alpha)
   gram = gram_matrix(S)
   tmp = v*gram_matrix(ambient_space(S))*transpose(basis_matrix(S))
   v_S = solve_left(gram_matrix(S),tmp)
@@ -455,7 +534,7 @@ function short_vectors_affine(gram::MatrixElem, v::MatrixElem, alpha::fmpq, d)
   # solve the quadratic triple
   Q = change_base_ring(QQ, Q)
   b = change_base_ring(QQ, transpose(b))
-  cv = quadratic_triple(-Q, -b,-QQ(c),equal=true)
+  cv = enumerate_quadratic_triple(-Q, -b,-QQ(c),equal=true)
   xt = transpose(x)
   cv = [xt+matrix(ZZ,1,nrows(Q),u[1])*K for u in cv]
   @hassert :K3Auto 1 all((v*gram*transpose(u))[1,1]==alpha for u in cv)
@@ -465,7 +544,7 @@ end
 
 
 @doc Markdown.doc"""
-    separating_hyperplanes
+    separating_hyperplanes(S::ZLat, v::fmpq_mat, h::fmpq_mat, d)
 
 Return ${x in S : x^2=d, x.v>0, x.h<0}$.
 
@@ -503,7 +582,7 @@ function separating_hyperplanes(gram::fmpq_mat, v::fmpq_mat, h::fmpq_mat, d)
   S_W = [x[1] for x in short_vectors(LQ,  abs(d*denominator(Q)))]
   append!(S_W,[-x for x in S_W])
   push!(S_W, 0*S_W[1])
-  #S_W = quadratic_triple(Q, zero_matrix(QQ,n-1,1), d)
+  #S_W = enumerate_quadratic_triple(Q, zero_matrix(QQ,n-1,1), d)
   S_W = [matrix(ZZ,1,nrows(Q),x)*bW for x in S_W]
   S = fmpq_mat[]
   h = change_base_ring(QQ,h)
@@ -522,7 +601,7 @@ function separating_hyperplanes(gram::fmpq_mat, v::fmpq_mat, h::fmpq_mat, d)
 end
 
 @doc Markdown.doc"""
-    find_basis(row_matrices::Vector, dim)
+    find_basis(row_matrices::Vector, dim::Integer)
 
 Return the first `dim` linearly independent vectors in row_matrices and their indices.
 
@@ -554,11 +633,11 @@ end
 find_basis(row_matrices::Vector) = find_basis(row_matrices, ncols(row_matrices[1]))
 
 """
-    is_in_G(S::ZLat, g::fmpz_mat) -> Bool
+    is_pm1_on_discr(S::ZLat, g::fmpz_mat) -> Bool
 
 Return whether the isometry `g` of `S` acts as `+-1` on the discriminant group.
 """
-function is_in_G(S::ZLat, g::fmpz_mat)
+function is_pm1_on_discr(S::ZLat, g::fmpz_mat)
   D = discriminant_group(S)
   imgs = [D(vec(matrix(QQ,1,rank(S),lift(d))*g)) for d in gens(D)]
   return all(imgs[i] == gens(D)[i] for i in 1:length(gens(D))) || all(imgs[i] == -gens(D)[i] for i in 1:length(gens(D)))
@@ -568,21 +647,26 @@ function is_in_G(S::ZLat, g::fmpz_mat)
   # return isone(gg) || gg == OD(-matrix(one(OD)))
 end
 
-Hecke.hom(D::Chamber, E::Chamber) = alg319(D, E)
+"""
+    hom(D::K3Chamber, E::K3Chamber) -> Vector{fmpz_mat}
+
+Return the set ``Hom_G(D, E)`` of elements of `G` mapping `D` to `E`.
+
+The elements are represented with respect to the basis of `S`.
+"""
+Hecke.hom(D::K3Chamber, E::K3Chamber) = alg319(D, E)
 #alg319(gram_matrix(D.data.SS), D.B,D.gramB, walls(D), walls(E), D.data.membership_test)
 
+"""
+    aut(D::K3Chamber, E::K3Chamber) -> Vector{fmpz_mat}
 
-aut(D::Chamber) = hom(D, D)
+Return the stabilizer of ``E`` in ``G``.
 
-function alg319(gram::MatrixElem ,raysD::Vector{fmpz_mat}, raysE::Vector{fmpz_mat}, membership_test)
-  n = ncols(gram)
-  partial_homs = [zero_matrix(ZZ, 0, n)]
-  basis,_ = find_basis(raysD, n)
-  gram_basis = basis*gram*transpose(basis)
-  return alg319(gram, basis, gram_basis, raysD, raysE, membership_test)
-end
+The elements are represented with respect to the basis of `S`.
+"""
+aut(D::K3Chamber) = hom(D, D)
 
-function alg319(D::Chamber, E::Chamber)
+function alg319(D::K3Chamber, E::K3Chamber)
   if !isdefined(D,:B)
     fingerprint_backtrack!(D)  # compute a favorable basis
   end
@@ -596,7 +680,7 @@ function alg319(D::Chamber, E::Chamber)
   partial_homs = [zero_matrix(ZZ, 0, n)]
   # breadth first search
   # Since we expect D and E to be isomorphic,
-  # a depth first search with early abort would be more efficient.
+  # a depth first search with early abort could be more efficient.
   # for now this does not seem to be a bottleneck
   for i in 1:n
     @vprint :K3Auto 4 "level $(i-1), partial homs $(length(partial_homs)) \n"
@@ -610,7 +694,7 @@ function alg319(D::Chamber, E::Chamber)
           continue
         end
         # now r has the correct inner products with what we need
-        push!(extensions, vcat(img,r))
+        push!(extensions, vcat(img, r))
       end
       if fp[i] != length(extensions)
         continue
@@ -629,7 +713,7 @@ function alg319(D::Chamber, E::Chamber)
     if denominator(f)!=1
       continue
     end
-    fz = change_base_ring(ZZ,f)
+    fz = change_base_ring(ZZ, f)
     if !D.data.membership_test(fz)
       continue
     end
@@ -650,8 +734,17 @@ function alg319(D::Chamber, E::Chamber)
   return homs
 end
 
-# worker for hom and aut
-function alg319(gram::MatrixElem, basis::fmpz_mat, gram_basis::fmpq_mat ,raysD::Vector{fmpz_mat}, raysE::Vector{fmpz_mat}, membership_test)
+
+# legacy worker for hom and aut without Plesken-Souvignier preprocessing
+function alg319(gram::MatrixElem, raysD::Vector{fmpz_mat}, raysE::Vector{fmpz_mat}, membership_test)
+  n = ncols(gram)
+  partial_homs = [zero_matrix(ZZ, 0, n)]
+  basis,_ = find_basis(raysD, n)
+  gram_basis = basis*gram*transpose(basis)
+  return alg319(gram, basis, gram_basis, raysD, raysE, membership_test)
+end
+
+function alg319(gram::MatrixElem, basis::fmpz_mat, gram_basis::fmpq_mat, raysD::Vector{fmpz_mat}, raysE::Vector{fmpz_mat}, membership_test)
   n = ncols(gram)
   partial_homs = [zero_matrix(ZZ, 0, n)]
   # breadth first search
@@ -708,14 +801,15 @@ end
 
 
 @doc Markdown.doc"""
-  Compute Delta_w
+    _alg58(L::ZLat, S::ZLat, R::ZLat, prRdelta, w)
 
-Output:
+Compute Delta_w
 
 Tuples (r_S, r) where r is an element of Delta_w and r_S is the
 orthogonal projection of `r` to `S`.
 
-Algorithm 5.8 in [Shi]
+Correponds to Algorithm 5.8 in [Shimada](@cite)
+but this implementation is different.
 """
 # legacy function needed for precomputations
 function _alg58(L::ZLat, S::ZLat, R::ZLat, prRdelta, w)
@@ -767,8 +861,8 @@ function _alg58(L::ZLat, S::ZLat, R::ZLat, w::MatrixElem)
   return _alg58(L, S, R, prRdelta, w)
 end
 
-
-function _alg58_short_vector(data::BorcherdsData, w::fmpz_mat)
+# the actual somewhat optimized implementation relying on short vector enumeration
+function _alg58_short_vector(data::BorcherdsCtx, w::fmpz_mat)
   L = data.L
   V = ambient_space(L)
   S = data.S
@@ -868,16 +962,14 @@ function _alg58_short_vector(data::BorcherdsData, w::fmpz_mat)
 end
 
 @doc Markdown.doc"""
-Compute Delta_w
+    _alg58_close_vector(data::BorcherdsCtx, w::fmpz_mat)
 
-Output:
-
-Tuples (r_S, r) where r is an element of Delta_w and r_S is the
+Return tuples (r_S, r) where r is an element of Delta_w and r_S is the
 orthogonal projection of `r` to `S^\vee` given in the basis of S.
 
-Algorithm 5.8 in [Shi]
+Corresponds to Algorithm 5.8 in [Shimada](@cite)
 """
-function _alg58_close_vector(data::BorcherdsData, w::fmpz_mat)
+function _alg58_close_vector(data::BorcherdsCtx, w::fmpz_mat)
   V = ambient_space(data.L)
   S = data.S
   d = exponent(discriminant_group(S))
@@ -962,7 +1054,7 @@ function _alg58_close_vector(data::BorcherdsData, w::fmpz_mat)
     transpose!(tmp, x)
     # c = (transpose(x)*gram*x)[1,1] - d
     c = (tmp*mul!(x,gram,x))[1,1] - d
-    #cv = quadratic_triple(Q,-b,-c,equal=true)
+    #cv = enumerate_quadratic_triple(Q,-b,-c,equal=true)
     mul!(b, Qi, b)
     #b = Qi*b
     v = vec(b)
@@ -995,13 +1087,13 @@ end
 
 
 @doc Markdown.doc"""
-    _walls_of_chamber(data::BorcherdsData, weyl_vector)
+    _walls_of_chamber(data::BorcherdsCtx, weyl_vector)
 
 Return the walls of the L|S chamber induced by `weyl_vector`.
 
-Corresponds Algorithm 5.11 in [Shi] and calls Polymake.
+Corresponds Algorithm 5.11 in [Shimada](@cite) and calls Polymake.
 """
-function _walls_of_chamber(data::BorcherdsData, weyl_vector, alg=:short)
+function _walls_of_chamber(data::BorcherdsCtx, weyl_vector, alg=:short)
   if alg==:short
     walls1 = _alg58_short_vector(data, weyl_vector)
   elseif alg==:close
@@ -1040,45 +1132,81 @@ function _walls_of_chamber(data::BorcherdsData, weyl_vector, alg=:short)
   return walls
 end
 
+@doc Markdown.doc"""
+    is_S_nondegenerate(L::ZLat, S::ZLat, w::fmpq_mat)
+
+Return whether the ``L|S`` chamber defined by `w` is `S`-nondegenerate.
+
+This is the case if and only if $C = C(w) \cap S \otimes \RR$ has the
+expected dimension `dim(S)`.
+"""
 function is_S_nondegenerate(L::ZLat, S::ZLat, w::fmpq_mat)
   R = Hecke.orthogonal_submodule(L, S)
   Delta_w = _alg58(L, S, R, w)
   V = ambient_space(L)
   G = gram_matrix(V)
-  prSDelta_w = [v*G for v in Delta_w]
-  i = zero_matrix(QQ,0,degree(S))
-  D = reduce(vcat,prSDelta_w,init=i)
-  P = positive_hull(D)
+  BS = transpose(basis_matrix(S))
+  prSDelta_w = [v * G * BS for v in Delta_w]
+  i = zero_matrix(QQ, 0, rank(S))
+  D = reduce(vcat, prSDelta_w, init=i)
+  P = positive_hull(D)  # the dual cone of C
+  # If P has a linear subspace, then its dual C is not of full dimension.
   return ispointed(P)
 end
 
+@doc Markdown.doc"""
+    inner_point(L::ZLat, S::ZLat, w::fmpq_mat)
+    inner_point(C::K3Chamber)
+
+Return a reasonably small integer inner point of the given L|S chamber.
+"""
 function inner_point_in_S(L::ZLat, S::ZLat, w::fmpq_mat)
-  # can we get a small inner point?
   R = Hecke.orthogonal_submodule(L, S)
   Delta_w = _alg58(L, S, R, w)
   V = ambient_space(L)
   G = gram_matrix(V)
-  prSDelta_w = [v*G*transpose(basis_matrix(S)) for v in Delta_w]
-  i = zero_matrix(QQ,0,rank(S))
-  D = reduce(vcat,prSDelta_w,init=i)
-  P = positive_hull(D)
-  Pd = polarize(P)
-  @hassert :K3Auto 1 is_pointed(Pd)
-  h = sum(rays(Pd))
-  h = matrix(QQ,1,rank(S),collect(h))*basis_matrix(S)
-  @hassert :K3Auto 1 all(0<inner_product(V,v,h)[1,1] for v in Delta_w)
+  prSDelta_w = [v * G * transpose(basis_matrix(S)) for v in Delta_w]
+  i = zero_matrix(QQ, 0, rank(S))
+  D = reduce(vcat, prSDelta_w, init=i)
+  P = positive_hull(D)  # dual to C
+  C = polarize(P)  # C
+  facets = rays(P)
+  @hassert :K3Auto 1 is_pointed(Pd) # we check S-nondegenerateness
+  H = hilbert_basis(C)
+  # add hilbert basis vectors until we are in the interior
+  n = length(facets)
+  h = H[1]
+  j = 2
+  for i in 1:n
+    if h*facets[i] > 0
+      continue
+    end
+    for k in j:length(H)
+      v = H[k]
+      if v*facets[i] > 0
+        j = k
+        h = h + v
+        break
+      end
+    end
+  end
+  # confirm the computation
+  @hassert :K3Auto 1 all(0 < inner_product(V, v, h)[1,1] for v in Delta_w)
   return h
 end
 
 
 @doc Markdown.doc"""
-    unproject_wall(data::BorcherdsData, vS::fmpz_mat)
+    unproject_wall(data::BorcherdsCtx, vS::fmpz_mat)
 
-Return the (-2)-walls of L containing $v^{perp_S}$ but not $S$.
+Return the (-2)-walls of L containing $v^{perp_S}$ but not all of ``S``.
 
-Based on Algorithm 5.13 in [Shi]
+Based on Algorithm 5.13 in [Shimada](@cite)
+
+# Arguments
+- `vS`: Given with respect to the basis of `S`.
 """
-function unproject_wall(data::BorcherdsData, vS::fmpz_mat)
+function unproject_wall(data::BorcherdsCtx, vS::fmpz_mat)
   d = gcd(vec(vS*data.gramS))
   v = QQ(1,d)*(vS*basis_matrix(data.S))  # primitive in Sdual
   vsq = QQ((vS*data.gramS*transpose(vS))[1,1],d^2)
@@ -1112,9 +1240,11 @@ function unproject_wall(data::BorcherdsData, vS::fmpz_mat)
 end
 
 @doc Markdown.doc"""
+    adjacent_chamber(D::K3Chamber, v) -> Chamber
+
 Return return the L|S chamber adjacent to `D` via the wall defined by `v`.
 """
-function adjacent_chamber(D::Chamber, v)
+function adjacent_chamber(D::K3Chamber, v)
   gramL = D.data.gramL
   dualDeltaR = D.data.dualDeltaR
   deltaR = D.data.deltaR
@@ -1175,16 +1305,16 @@ function adjacent_chamber(D::Chamber, v)
   end
   # both weyl vectors should lie in the positive cone.
   @assert ((D.weyl_vector)*D.data.gramL*transpose(w))[1,1]>0 "$(D.weyl_vector)    $v\n"
-  return Chamber(D.data, w, v)
+  return chamber(D.data, w, v)
 end
 
 
-function complete_to_basis(B::fmpz_mat,C::fmpz_mat)
+function complete_to_basis(B::fmpz_mat, C::fmpz_mat)
   basis = B
   for j in 1:nrows(C)-nrows(B)
     for i in 1:nrows(C)
       c = C[i,:]
-      A = vcat(basis,c)
+      A = vcat(basis, c)
       h = snf(A)
       if h[1:end,1:nrows(h)]==1
         basis = A
@@ -1196,61 +1326,69 @@ function complete_to_basis(B::fmpz_mat,C::fmpz_mat)
 end
 
 @doc Markdown.doc"""
-    K3_surface_automorphism_group(S::ZLat; [ample_class]) -> generators, minus_2_classes, chambers
+    K3_surface_automorphism_group(S::ZLat; [ample_class]) -> generators, rational curves, chambers
 
-Return generators for the automorphism group of a very-general $S$-polarized K3 surface.
+Compute the automorphism group of a very-general $S$-polarized K3 surface.
 
 Further return representatives of the `Aut(X)`-orbits of (-2)-curves on `X` and
-an almost fundamental domain for the action of Aut(X) on the nef cone given by a
-list of chambers.
+a fundamental domain for the action of Aut(X) on the set of nef L|S chambers.
+This is almost a fundamental domain for Aut(X) on the nef cone.
 
 Here very general means that `Num(X)` is isomorphic to `S` and the image of
-$Aut(X) \to H^0(X,\Omega^2_X)$ is of order at most 2.
+$Aut(X) \to H^0(X,\Omega^2_X)$ is $ \pm 1$.
 
 The function returns generators for the image of
 
 \[f: Aut(X) \to O(Num(X)) \]
 
-Note that under our genericity assumptions the kernel of $f$ is of order at most $2$.
+The output is represented with respect to  the basis of `S`.
+
+Note that under our genericity assumptions the kernel of $f$ is of order at most $2$
+and it is equal to $2$ if and only if $S$ is $2$-elementary.
 If an ample class is given, then the generators returned preserve it.
 
-Note that this kind of computation can be very expensive.
+This kind of computation can be very expensive. To print progress information
+use `set_verbose_level(:K3Auto, 2)` or higher.
 """
 function K3_surface_automorphism_group(S::ZLat)
-  return K3Auto(S, n=26 ,compute_OR=false)
+  return K3Auto(S, n=26, compute_OR=false)
 end
 
 function K3Auto(S::ZLat, n::Integer; kw...)
   @req n in [10,18,26] "n(=$(n)) must be one of 10,18 or 26"
   L, S, weyl = preprocessingK3Auto(S, n)
   A = K3Auto(L, S, weyl; kw...)
-  return collect(A[2]),reduce(append!,values(A[3]),init=Chamber[]), collect(A[4])
+  return collect(A[2]),reduce(append!,values(A[3]),init=K3Chamber[]), collect(A[4])
 end
 
 @doc Markdown.doc"""
     K3Auto(L::ZLat, S::ZLat, w::fmpq_mat; compute_OR=true, entropy_abort=false, max_nchambers=-1)
+    K3Auto(data::BorcherdsCtx, w; entropy_abort=false, max_nchambers=-1)
 
 Compute the automorphism group of a K3
 
-- `w` - initial Weyl vector
-- `L` - even, unimodular, hyperbolic lattice of rank 10,18 or 26
-- `S` - a sublattice of `L`
-
+# Arguments
+- `w`:  initial Weyl vector
+- `L`:  even, unimodular, hyperbolic lattice of rank 10,18 or 26
+- `S`:  a primitive sublattice of `L`
+- `compute_OR=true`: if false take as `G` all isometries of `S` extending to `L`.
+- `max_nchambers`: break the computation after `max_nchambers` are found.
+- `entropy_abort` abort if an automorphism of positive entropy is found
 """
 function K3Auto(L::ZLat, S::ZLat, w::fmpq_mat; compute_OR=true, entropy_abort=false, max_nchambers=-1)
-  data = BorcherdsData(L, S, compute_OR)
+  data = BorcherdsCtx(L, S, compute_OR)
   w = change_base_ring(ZZ, w*inv(basis_matrix(L)))
   return K3Auto(data, w; entropy_abort=entropy_abort, max_nchambers=max_nchambers)
 end
 
-function K3Auto(data::BorcherdsData, w; entropy_abort=false, max_nchambers=-1)
+function K3Auto(data::BorcherdsCtx, w; entropy_abort=false, max_nchambers=-1)
   S = data.S
   # for G-sets
   F = FreeModule(ZZ,rank(S))
   # initialization
-  chambers = Dict{UInt64,Vector{Chamber}}()
-  explored = Set{Chamber}()
-  D = Chamber(data, w, zero_matrix(ZZ, 1, rank(S)))
+  chambers = Dict{UInt64,Vector{K3Chamber}}()
+  explored = Set{K3Chamber}()
+  D = chamber(data, w, zero_matrix(ZZ, 1, rank(S)))
   waiting_list = [D]
 
   automorphisms = Set{fmpz_mat}()
@@ -1271,9 +1409,9 @@ function K3Auto(data::BorcherdsData, w; entropy_abort=false, max_nchambers=-1)
       continue
     end
     # check G-congruence
-    fp = fingerprint(D)  # this is the bottleneck - the computation of the walls.
-    if !haskey(chambers,fp)
-      chambers[fp] = Chamber[]
+    fp = hash(fingerprint(D))  # this is the bottleneck - the computation of the walls.
+    if !haskey(chambers, fp)
+      chambers[fp] = K3Chamber[]
     end
     is_explored = false
     for E in chambers[fp]
@@ -1377,37 +1515,47 @@ function chain_reflect(V::Hecke.QuadSpace, h1, h2, w, separating_walls::Vector{f
   return h2, w
 end
 
-# return QQ(D(weyl)\cap S)
+@doc Markdown.doc"""
+    span_in_S(L, S, weyl) -> fmpq_mat
+
+Return a basis matrix of the linear hull of $C(weyl) \cap S$.
+with respect to the basis of `S`.
+"""
 function span_in_S(L, S, weyl)
   R = Hecke.orthogonal_submodule(L, S)
   V = ambient_space(L)
   Delta_w = _alg58(L, S, R, weyl)
   G = gram_matrix(V)
-  prSDelta_w = [v*G for v in Delta_w]
+  BS = transpose(basis_matrix(S))
+  prSDelta_w = [v*G*BS for v in Delta_w]
   @vprint :K3Auto 2 "Ddual given by $(length(prSDelta_w)) rays\n"
-  i = zero_matrix(QQ, 0, degree(S))
-  R = Hecke.orthogonal_submodule(L, S)
+  i = zero_matrix(QQ, 0, rank(S))
   Ddual = reduce(vcat, prSDelta_w, init=i)
-  Ddual = vcat(Ddual, basis_matrix(R))
-  Ddual = vcat(Ddual, -basis_matrix(R))
   Ddual = positive_hull(Ddual)
   @vprint :K3Auto 3 "polarizing \n"
-  D = polarize(Ddual)
+  C = polarize(Ddual)
   @vprint :K3Auto 3 "calculating rays\n"
-  gensN = [matrix(QQ, 1, degree(S), v) for v in vcat(Oscar.rays(D),lineality_space(D))]
+  gensN = [matrix(QQ, 1, rank(S), v) for v in vcat(Oscar.rays(C),lineality_space(C))]
   @vprint :K3Auto 3 "done\n"
   gensN = reduce(vcat, gensN, init=i)
   r = Hecke.rref!(gensN)
   gensN = gensN[1:r,:]
-  QQDcapS = lattice(V, gensN)
-  return QQDcapS
+  return gensN
 end
 
+@doc Markdown.doc"""
+    weyl_vector_non_degenerate(L::ZLat, S::ZLat, u0::fmpq_mat, weyl::fmpq_mat, ample0::fmpq_mat, perturbation_factor=1000)
+
+Return an `S`-nondegenerate Weyl vector of `L`.
+
+# u0: inner point of the chamber `C(weyl)` of `L`.
+# ample0: an ample class... the weyl vector and u0 are moved to the same chamber first
+# perturbation_factor: used to get a random point close to the ample vector. If it is (too) big, computations become harder.
+"""
 function weyl_vector_non_degenerate(L::ZLat, S::ZLat, u0::fmpq_mat, weyl::fmpq_mat, ample0::fmpq_mat, perturbation_factor=1000)
   V = ambient_space(L)
   ample = ample0
   u = u0
-
 
   @vprint :K3Auto 2 "calculating separating hyperplanes\n"
   separating_walls = separating_hyperplanes(L, u, ample, -2)
@@ -1418,7 +1566,7 @@ function weyl_vector_non_degenerate(L::ZLat, S::ZLat, u0::fmpq_mat, weyl::fmpq_m
     return weyl, u, ample
   end
   @vprint :K3Auto 2 "calculating QQDcapS\n"
-  QQDcapS = span_in_S(L,S,weyl)
+  QQDcapS = lattice(V, span_in_S(L,S,weyl)*basis_matrix(S))
 
   N = Hecke.orthogonal_submodule(L, QQDcapS)
   N = lll(N)
@@ -1455,9 +1603,55 @@ function weyl_vector_non_degenerate(L::ZLat, S::ZLat, u0::fmpq_mat, weyl::fmpq_m
   u, weyl = chain_reflect(V, h, u, weyl, separating)
   @hassert :K3Auto 1 all(inner_product(V,u,r)[1,1] > 0 for r in separating)
 
-  @assert is_S_nondegenerate(L,S,weyl)
+  @assert is_S_nondegenerate(L, S, weyl)
   return weyl, u, h
 end
+
+@doc Markdown.doc"""
+  embed(S::ZLat, G::Genus, primitive=true) -> Bool, embedding
+
+Return a (primitive) embedding of the integral lattice `S` into some lattice in the genus of `G`.
+"""
+function embed(L::ZLat, G::ZGenus, primitive::Bool=true)
+  raise(NotImplementedError("for now G needs to be even unimodular, but you can use Nikulin's theory to get a primitive embedding by 'hand' in the non-unimodular cases"))
+end
+
+@doc Markdown.doc"""
+    embed_in_unimodular(S::ZLat, pos, neg, primitive=true, even=true) -> Bool, L, S', iS, iR
+
+Return a (primitive) embedding of the integral lattice `S` into some
+even unimodular lattice of signature (pos, neg).
+
+For now this works only for even lattices.
+"""
+function embed_in_unimodular(S::ZLat, pos, neg, primitive=true, even=true)
+  @vprint :K3Auto 1 "computing embedding in L_$(n) \n"
+  pS,kS, nS = signature_tuple(S)
+  @req kS == 0 "S must be non-degenerate"
+  even || raise(NotImplementedError("for now we need the unimodular lattice to be even."))
+  pR = pos - pS
+  nR = neg - nS
+  DS = discriminant_group(S)
+  DR = rescale(DS, -1)  # discriminant group of R = S^\perp in L as predicted by Nikulin
+  GR = genus(DR, (pR, nR)) # genus of R
+  R = representative(GR)
+  R = lll(R)  # make R a bit nicer
+  R = Zlattice(gram=gram_matrix(R)) # clear the history of R
+
+  SR, iS, iR = orthogonal_sum(S, R)
+  S = lattice(V, basis_matrix(S)*iS.matrix)
+  R = lattice(V, basis_matrix(R)*iR.matrix)
+  fl, glue = is_anti_isometric_with_anti_isometry(discriminant_group(S), discriminant_group(R))
+  @assert fl
+  L = overlattice(glue)
+  V = ambient_space(L)
+  @assert V === ambient_space(SR)
+  @hassert :K3Auto 1 abs(det(L)) ==1
+  @hassert :K3Auto 1 denominator(gram_matrix(L))==1
+  @hassert :K3Auto 1 !even || is_even(L)
+  return L, S, iS, R, iR
+end
+
 
 @doc Markdown.doc"""
     embed_in_unimodular(S::ZLat, n)
@@ -1501,13 +1695,13 @@ end
 @doc Markdown.doc"""
     weyl_vector(L::ZLat, U0::ZLat) -> weyl, u0
 
-Return a Weyl vector of `L` as well as an interior point of the corresponding chamber.
+Return a Weyl vector of ``L`` as well as an interior point of the corresponding chamber.
 
-For `L` of signature (1,25) it uses the 24 holy constructions of the Leech lattice.
+For ``L`` of signature (1, 25) it uses the 23 holy constructions of the Leech lattice.
 
 Input:
 
-`L` - an even unimodular lattice of signature (1,9), (1,17) or (1,25)
+`L` - an even unimodular lattice of signature ``(1, 9)``, ``(1, 17)`` or ``(1, 25)``
 `U0` - a sublattice of `L` with gram matrix `[0 1; 1 -2]`
 """
 # we can do the 24 constructions of the leech lattice
@@ -1522,7 +1716,7 @@ function weyl_vector(L::ZLat, U0::ZLat)
     E8 = R0
     # normalize the basis
     e8 = rescale(root_lattice(:E,8), -1)
-    _, T = isisometric(e8, E8, ambient_representation=false)
+    _, T = is_isometric_with_isometry(e8, E8, ambient_representation=false)
     E8 = lattice(V, T * basis_matrix(E8))
     B = vcat(basis_matrix(U), basis_matrix(E8))
     Bdual = inv(gram_matrix(V) * transpose(B))
@@ -1537,7 +1731,7 @@ function weyl_vector(L::ZLat, U0::ZLat)
     while true
       R = Hecke.orthogonal_submodule(L,U)
       @vprint :K3Auto 1 "starting isometry test\n"
-      isiso, T = isisometric(e8e8, R, ambient_representation=false)
+      isiso, T = is_isometric_with_isometry(e8e8, R, ambient_representation=false)
       @vprint :K3Auto 1 "done\n"
       if isiso
         E8E8 = R
@@ -1603,7 +1797,7 @@ function weyl_vector(L::ZLat, U0::ZLat)
         e8e8,_,_ = orthogonal_sum(e8, e8)
         e8e8e8,_,_ = orthogonal_sum(e8e8, e8)
         # the isometry test seems to be expensive sometimes
-        isiso,T = isisometric(e8e8e8, R, ambient_representation=false)
+        isiso,T = is_isometric_with_isometry(e8e8e8, R, ambient_representation=false)
         @vprint :K3Auto 2 root_type(R)[2]
         @vprint :K3Auto 2 "\n"
         if isiso
@@ -1612,7 +1806,7 @@ function weyl_vector(L::ZLat, U0::ZLat)
         U = U0
         R = R0
         =#
-        leech,v,h = leech_from_root_lattice(rescale(R,-1))
+        leech,v,h = leech_from_niemeier(rescale(R,-1))
         # the leech lattice is the h-neighbor of R with respect to v
         # with the attached hyperbolic planes this can be engineered to give an isometry
         @hassert :K3Auto 1 mod(inner_product(V,v,v)[1,1],2*h^2)==0
@@ -1642,6 +1836,13 @@ function weyl_vector(L::ZLat, U0::ZLat)
   error("L must be even, hyperbolic unimodular of rank 10,18,26")
 end
 
+@doc Markdown.doc"""
+    find_section(L::ZLat, f) ->
+
+Return a ``x \in L`` with ``x^2 = -2`` and ``x.f=1``.
+
+We try to be clever and return a smallish section by solving a CVP.
+"""
 function find_section(L::ZLat, f)
   V = ambient_space(L)
   g = [abs(i) for i in vec(inner_product(ambient_space(L),f,basis_matrix(L)))]
@@ -1709,9 +1910,9 @@ function preprocessingK3Auto(S::ZLat, n::Integer; ample=nothing)
   else
     # find a hyperbolic plane
     G = gram_matrix(L)
-    g1,u1 = lll_gram_indef_with_transform(change_base_ring(ZZ,G))
+    g1, u1 = lll_gram_indef_with_transform(change_base_ring(ZZ, G))
     # apparently we need to run lll two times to produce a zero
-    g2,u2 = lll_gram_indef_with_transform(change_base_ring(ZZ,g1))
+    g2, u2 = lll_gram_indef_with_transform(change_base_ring(ZZ, g1))
     u = u2*u1
     @assert g2 == u*G*transpose(u)
     B = u*basis_matrix(L)
@@ -1721,13 +1922,13 @@ function preprocessingK3Auto(S::ZLat, n::Integer; ample=nothing)
       if gram_matrix(S)[1,1]==0
         v = basis_matrix(S)[1,:]
       else
-        b,v = Hecke._isisotropic_with_vector(gram_matrix(L))
+        b, v = Hecke._isisotropic_with_vector(gram_matrix(L))
         @assert b
-        v = matrix(QQ,1,degree(L),v)
+        v = matrix(QQ, 1, degree(L), v)
         v = v*basis_matrix(L)
       end
-      s = find_section(L,v)
-      B = vcat(v,s)
+      s = find_section(L, v)
+      B = vcat(v, s)
     end
     U = lattice(V, B)
   end
@@ -1778,8 +1979,6 @@ function preprocessingK3Auto(S::ZLat, n::Integer; ample=nothing)
   # precomputations
   R = lll(Hecke.orthogonal_submodule(L, S))
 
-
-
   return L,S,weyl2
 end
 
@@ -1787,7 +1986,11 @@ end
 ################################################################################
 # the 23 holy constructions of the leech lattice
 ################################################################################
+@doc Markdown.doc"""
+    coxeter_number(ADE::Symbol, n)
 
+Return the coxeter number of this ADE diagram.
+"""
 function coxeter_number(ADE::Symbol, n)
   if ADE == :A
     return n+1
@@ -1802,6 +2005,11 @@ function coxeter_number(ADE::Symbol, n)
   end
 end
 
+@doc Markdown.doc"""
+    highest_root(ADE::Symbol, n) -> fmpz_mat
+
+Return coordinates of the highest root of `root_lattice(ADE, n)`.
+"""
 function highest_root(ADE::Symbol, n)
   if ADE == :A
     w = [1 for i in 1:n]
@@ -1828,15 +2036,15 @@ function _weyl_vector(R::ZLat)
 end
 
 @doc Markdown.doc"""
-    leech_from_root_lattice(niemeier_lattice::ZLat) -> Zlat,fmpq_mat, Integer
+    leech_from_niemeier(niemeier_lattice::ZLat) -> Zlat,fmpq_mat, Integer
 
 Construct the Leech lattice from `niemeier_lattice` by using one of the 23-holy constructions.
 
 Returns a triple `leech_lattice, v, h` where `leech_lattice` is constructed as
-`h`-neighbor of `niemeier_lattice` with respect to `v`. `h` is the Coxeter number
-of the Niemer lattice.
+`h`-neighbor of `niemeier_lattice` with respect to `v`.
+Here `h` is the Coxeter number of the Niemer lattice.
 """
-function leech_from_root_lattice(niemeier_lattice::ZLat)
+function leech_from_niemeier(niemeier_lattice::ZLat)
   # construct the leech lattice from one of the 23 holy constructions in SPLAG
   # we follow Ebeling
   # there seem to be some signs wrong in Ebeling?
@@ -1885,6 +2093,15 @@ end
 # ample
 ################################################################################
 
+@doc Markdown.doc"""
+    ample_class(S::ZLat)
+
+Return an interior point of a Weyl chamber of the hyperbolic lattice `S`.
+
+This means that its orthogonal complement $s^\perp$ does not contain any
+``(-2)``-vectors. If `S` is the Picard lattice of a K3 surface, then the ample
+cone is the (interior of) some Weyl chamber.
+"""
 function ample_class(S::ZLat)
   @req signature_tuple(S)[1] == 1 "lattice must be hyperbolic"
   V = ambient_space(S)
@@ -2003,7 +2220,7 @@ function check_zero_entropy(candidate::ZLat, filename=""; n=26)
     println(io, "hyperbolic")
   end
   close(io)
-  chambers = reduce(append!,values(chambers),init=Chamber[])
+  chambers = reduce(append!,values(chambers),init=K3Chamber[])
 
   io = open("$(filename).chambers", "w")
   write_chambers(chambers, io)
@@ -2035,7 +2252,7 @@ function write_chambers(chambers, io)
   end
 end
 
-function parse_chambers(D::BorcherdsData, filename)
+function parse_chambers(D::BorcherdsCtx, filename)
   io = open(filename,"r")
   C = []
   r = rank(D.S)
@@ -2051,7 +2268,7 @@ function parse_chambers(D::BorcherdsData, filename)
     walls = matrix(ZZ,k,r,s[2])
     walls = [walls[i,:] for i in 1:k]
     previous_wall = matrix(ZZ, 1, r, s[3])
-    c = Chamber(D, weyl, previous_wall, walls)
+    c = chamber(D, weyl, previous_wall, walls)
     push!(C,c)
   end
   return C

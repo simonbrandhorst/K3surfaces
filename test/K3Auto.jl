@@ -13,7 +13,7 @@
   S = Zlattice(B, gram = G);
 
   weyl = QQ[31   61   52   71   5   -6   5   -2   -7   8]
-  k3 = BorcherdsData(L, S, false)
+  k3 = BorcherdsCtx(L, S, false)
   weylk3 = change_base_ring(ZZ,solve_left(basis_matrix(L), weyl))
   walls = K3surfaces._walls_of_chamber(k3, weylk3)
   @test length(walls)==4
@@ -67,22 +67,39 @@ end
 
 
   # one with parabolic automorphism group
+
+  # we hardcode the embedding of the following lattice
+  # because length(chambers) depends on the embedding
+  #=
   S,iU,_=orthogonal_sum(Zlattice(gram=ZZ[0 1; 1 -2]),Zlattice(gram=ZZ[-50;]))
   k3aut, chambers, rational_mod_aut = K3Auto(S, 10, compute_OR=true)
   @test length(k3aut)==2
   @test length(chambers) == 74
   @test length(rational_mod_aut) == 4
+  =#
 
-  C = lattice(ambient_space(S),common_invariant(k3aut)[2])
-  d = diagonal(rational_span(C))
-  @test d[1] == 0 # a common invariant isotropic ray.
+  t = [fmpq[0 1 0 0 0 0 0 0 0 0; 1 -2 0 0 0 0 0 0 0 0; 0 0 -50 0 0 0 0 0 0 0; 0 0 0 -2 1 0 0 0 0 1; 0 0 0 1 -2 0 0 0 0 -1; 0 0 0 0 0 -2 -1 1 0 1; 0 0 0 0 0 -1 -2 0 0 0; 0 0 0 0 0 1 0 -2 0 -1; 0 0 0 0 0 0 0 0 -2 -1; 0 0 0 1 -1 1 0 -1 -1 -4],
+   fmpq[1 0 0 0 0 0 0 0 0 0; 0 1 0 0 0 0 0 0 0 0; 0 0 1//50 21//25 4//25 19//25 31//50 31//50 37//50 13//25; 0 0 0 1 0 0 0 0 0 0; 0 0 0 0 1 0 0 0 0 0; 0 0 0 0 0 1 0 0 0 0; 0 0 0 0 0 0 1 0 0 0; 0 0 0 0 0 0 0 1 0 0; 0 0 0 0 0 0 0 0 1 0; 0 0 0 0 0 0 0 0 0 1],
+   fmpq[1 0 0 0 0 0 0 0 0 0; 0 1 0 0 0 0 0 0 0 0; 0 0 1 0 0 0 0 0 0 0]]
+  t = [matrix(QQ,i) for i in t]
+  gramV, basisL, basisS = t
+  V = quadratic_space(QQ, gramV)
+  L = lattice(V, basisL)
+  S = lattice(V, basisS)
 
+  k3 = K3surfaces.BorcherdsCtx(L,S, false)
+  weyl = ZZ[76   30   275   -231   -45   -208   -172   -171   -203   -143]
 
-  S,iU,_=orthogonal_sum(Zlattice(gram=ZZ[0 1; 1 -2]),Zlattice(gram=ZZ[-50;]))
-  k3aut, chambers, rational_mod_aut = K3Auto(S, 10, compute_OR=false)
+  A = K3Auto(k3, weyl)
+  k3aut, chambers, rational_mod_aut = collect(A[2]),reduce(append!,values(A[3]),init=K3Chamber[]), collect(A[4])
+
   @test length(k3aut)==2
-  @test length(chambers) == 74
+  @test length(chambers) == 127
   @test length(rational_mod_aut) == 4
 
+  SS = Zlattice(gram=gram_matrix(S))
+  C = lattice(ambient_space(SS),common_invariant(k3aut)[2])
+  d = diagonal(rational_span(C))
+  @test d[1] == 0 # a common invariant isotropic ray.
 end
 
